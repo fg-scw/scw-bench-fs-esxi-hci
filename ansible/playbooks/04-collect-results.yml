@@ -1,0 +1,151 @@
+---
+# =============================================================================
+# 04 - Collect and Aggregate Results
+# Fetches results from all hosts and generates comparison report.
+# =============================================================================
+
+- name: Collect Benchmark Results
+  hosts: benchmark_vms:nfs_proxy
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Clean old NFS-era results (if any)
+      ansible.builtin.file:
+        path: "{{ results_dir }}/fio/nfs-loopback"
+        state: absent
+
+    - name: List all result files
+      ansible.builtin.find:
+        paths: "{{ results_dir }}"
+        recurse: yes
+        file_type: file
+      register: result_files
+
+    - name: Display result count
+      ansible.builtin.debug:
+        msg: "Found {{ result_files.files | length }} result files on {{ inventory_hostname }}"
+
+    - name: Generate results summary
+      ansible.builtin.shell: |
+        SUMMARY="{{ results_dir }}/summary-{{ inventory_hostname }}.md"
+        cat > "$SUMMARY" << 'HEADER'
+        # Storage Benchmark Results
+        HEADER
+        echo "## Host: $(hostname)" >> "$SUMMARY"
+        echo "## Generated: $(date -Iseconds)" >> "$SUMMARY"
+        echo "" >> "$SUMMARY"
+
+        # --- FIO ---
+        echo "## FIO Results" >> "$SUMMARY"
+        echo "" >> "$SUMMARY"
+        echo "| Scenario | Profile | Read IOPS | Write IOPS | Read BW (MB/s) | Write BW (MB/s) | Read p99 (us) | Write p99 (us) |" >> "$SUMMARY"
+        echo "|----------|---------|-----------|------------|----------------|-----------------|---------------|----------------|" >> "$SUMMARY"
+
+        for scenario_dir in {{ results_dir }}/fio/*/; do
+          [ -d "$scenario_dir" ] || continue
+          scenario=$(basename "$scenario_dir")
+          for json_file in "$scenario_dir"/*.json; do
+            [ -f "$json_file" ] || continue
+            profile=$(basename "$json_file" .json)
+            ROW=$(python3 -c "
+        import json, sys
+        try:
+            with open('$json_file') as f: d = json.load(f)
+            j = d.get('jobs',[{}])[0]
+            r, w = j.get('read',{}), j.get('write',{})
+            ri = r.get('iops',0)
+            wi = w.get('iops',0)
+            rb = r.get('bw',0)/1024
+            wb = w.get('bw',0)/1024
+            rp = r.get('clat_ns',{}).get('percentile',{}).get('99.000000',0)/1000
+            wp = w.get('clat_ns',{}).get('percentile',{}).get('99.000000',0)/1000
+            print(f'| $scenario | $profile | {ri:.0f} | {wi:.0f} | {rb:.1f} | {wb:.1f} | {rp:.1f} | {wp:.1f} |')
+        except: print(f'| $scenario | $profile | ERR | ERR | ERR | ERR | ERR | ERR |')
+        " 2>/dev/null)
+            echo "$ROW" >> "$SUMMARY"
+          done
+        done
+
+        # --- IOPing ---
+        echo "" >> "$SUMMARY"
+        echo "## IOPing Latency" >> "$SUMMARY"
+        for scenario_dir in {{ results_dir }}/ioping/*/; do
+          [ -d "$scenario_dir" ] || continue
+          scenario=$(basename "$scenario_dir")
+          echo "### $scenario" >> "$SUMMARY"
+          for f in "$scenario_dir"/*.txt; do
+            [ -f "$f" ] || continue
+            echo '```' >> "$SUMMARY"
+            tail -3 "$f" >> "$SUMMARY"
+            echo '```' >> "$SUMMARY"
+          done
+        done
+
+        # --- DD ---
+        echo "" >> "$SUMMARY"
+        echo "## DD Throughput" >> "$SUMMARY"
+        for scenario_dir in {{ results_dir }}/dd/*/; do
+          [ -d "$scenario_dir" ] || continue
+          scenario=$(basename "$scenario_dir")
+          echo "### $scenario" >> "$SUMMARY"
+          for f in "$scenario_dir"/*.txt; do
+            [ -f "$f" ] || continue
+            echo "- **$(basename $f .txt)**: $(tail -1 $f)" >> "$SUMMARY"
+          done
+        done
+
+        # --- PGBench ---
+        echo "" >> "$SUMMARY"
+        echo "## PGBench" >> "$SUMMARY"
+        for scenario_dir in {{ results_dir }}/pgbench/*/; do
+          [ -d "$scenario_dir" ] || continue
+          scenario=$(basename "$scenario_dir")
+          echo "### $scenario" >> "$SUMMARY"
+          for f in "$scenario_dir"/*.txt; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .txt)
+            tps=$(grep "tps = " "$f" | head -1 || echo "N/A")
+            lat=$(grep "latency average" "$f" || echo "N/A")
+            echo "- **$name**: $tps / $lat" >> "$SUMMARY"
+          done
+        done
+
+        # --- Sysbench ---
+        echo "" >> "$SUMMARY"
+        echo "## Sysbench FileIO" >> "$SUMMARY"
+        for scenario_dir in {{ results_dir }}/sysbench/*/; do
+          [ -d "$scenario_dir" ] || continue
+          scenario=$(basename "$scenario_dir")
+          echo "### $scenario" >> "$SUMMARY"
+          for f in "$scenario_dir"/*.txt; do
+            [ -f "$f" ] || continue
+            mode=$(basename "$f" .txt)
+            throughput=$(grep "read, MiB/s\|written, MiB/s\|Throughput" "$f" | head -2 || echo "N/A")
+            echo "- **$mode**: $throughput" >> "$SUMMARY"
+          done
+        done
+
+        echo "" >> "$SUMMARY"
+        echo "---" >> "$SUMMARY"
+        echo "Generated on $(hostname) at $(date)" >> "$SUMMARY"
+        cat "$SUMMARY"
+      args:
+        executable: /bin/bash
+      register: summary
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg: "{{ summary.stdout }}"
+
+    - name: Archive results
+      ansible.builtin.archive:
+        path: "{{ results_dir }}"
+        dest: "/tmp/benchmark-results-{{ inventory_hostname }}.tar.gz"
+        format: gz
+
+    - name: Fetch results archive
+      ansible.builtin.fetch:
+        src: "/tmp/benchmark-results-{{ inventory_hostname }}.tar.gz"
+        dest: "{{ playbook_dir }}/../../benchmarks/results/"
+        flat: true

@@ -1,0 +1,421 @@
+---
+# =============================================================================
+# 03 - Run Storage Benchmarks
+#
+# Phases:
+#   1a: virtiofs direct (proxy) -- theoretical max
+#   1b: iSCSI loopback (proxy) -- tgtd overhead
+#   2:  VM benchmarks -- direct iSCSI + datastore scenarios
+#   3:  MLPerf Storage (proxy, optional)
+# =============================================================================
+
+# =============================================================================
+# PHASE 1a: Baseline virtiofs
+# =============================================================================
+- name: "Phase 1a: Baseline virtiofs (direct File Storage)"
+  hosts: nfs_proxy
+  become: true
+  gather_facts: true
+  tags: [baseline, baseline-virtiofs]
+  vars:
+    scenario: "baseline-virtiofs"
+    bench_path: "{{ filestorage_mount }}/bench-baseline"
+    bench_file: "{{ filestorage_mount }}/bench-baseline/testfile"
+  tasks:
+    - name: Create benchmark directory
+      ansible.builtin.file:
+        path: "{{ bench_path }}"
+        state: directory
+        mode: '0755'
+    - name: "fio benchmarks ({{ scenario }})"
+      ansible.builtin.shell: |
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        export BENCH_FILE="{{ bench_file }}"
+        mkdir -p {{ results_dir }}/fio/{{ scenario }}
+        for profile in {{ benchmark_dir }}/fio-profiles/*.fio; do
+          name=$(basename "$profile" .fio)
+          echo "=== fio: $name ({{ scenario }}) ==="
+          fio "$profile" --output-format=json \
+            --output="{{ results_dir }}/fio/{{ scenario }}/${name}.json" 2>&1
+          sleep 5
+        done
+        rm -f "{{ bench_file }}"
+      args:
+        executable: /bin/bash
+      async: 3600
+      poll: 30
+    - name: "ioping ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/ioping/{{ scenario }}
+        ioping -c {{ ioping_count }} -s {{ ioping_size }} "{{ bench_path }}" \
+          > {{ results_dir }}/ioping/{{ scenario }}/sequential.txt 2>&1
+        ioping -c {{ ioping_count }} -s {{ ioping_size }} -R "{{ bench_path }}" \
+          > {{ results_dir }}/ioping/{{ scenario }}/random.txt 2>&1
+      args:
+        executable: /bin/bash
+    - name: "dd throughput ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/dd/{{ scenario }}
+        dd if=/dev/zero of={{ bench_path }}/dd-test bs=1M count=1024 conv=fdatasync \
+          2> {{ results_dir }}/dd/{{ scenario }}/write.txt
+        echo 3 > /proc/sys/vm/drop_caches
+        dd if={{ bench_path }}/dd-test of=/dev/null bs=1M \
+          2> {{ results_dir }}/dd/{{ scenario }}/read.txt
+        rm -f {{ bench_path }}/dd-test
+      args:
+        executable: /bin/bash
+    - name: "bonnie++ ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/bonnie/{{ scenario }}
+        bonnie++ -d {{ bench_path }} -s {{ bonnie_size_mb }}M -n 256 -u root \
+          -q > {{ results_dir }}/bonnie/{{ scenario }}/bonnie.csv 2>&1
+        bon_csv2txt < {{ results_dir }}/bonnie/{{ scenario }}/bonnie.csv \
+          > {{ results_dir }}/bonnie/{{ scenario }}/bonnie.txt 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      async: 1800
+      poll: 30
+    - name: "pgbench ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/pgbench/{{ scenario }}
+        systemctl stop postgresql || true
+        PGDATA="{{ bench_path }}/pgdata"
+        mkdir -p "$PGDATA" && chown postgres:postgres "$PGDATA"
+        sudo -u postgres /usr/lib/postgresql/*/bin/initdb -D "$PGDATA" 2>&1 || true
+        sudo -u postgres /usr/lib/postgresql/*/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start 2>&1 || true
+        sleep 3
+        sudo -u postgres createdb benchdb 2>/dev/null || true
+        sudo -u postgres pgbench -i -s {{ pgbench_scale }} benchdb \
+          > {{ results_dir }}/pgbench/{{ scenario }}/init.log 2>&1
+        sudo -u postgres pgbench -S -c {{ pgbench_clients }} -T {{ pgbench_duration }} benchdb \
+          > {{ results_dir }}/pgbench/{{ scenario }}/readonly.txt 2>&1
+        sudo -u postgres pgbench -c {{ pgbench_clients }} -T {{ pgbench_duration }} benchdb \
+          > {{ results_dir }}/pgbench/{{ scenario }}/readwrite.txt 2>&1
+        sudo -u postgres /usr/lib/postgresql/*/bin/pg_ctl -D "$PGDATA" stop 2>/dev/null || true
+        systemctl start postgresql || true
+        rm -rf "$PGDATA"
+      args:
+        executable: /bin/bash
+      async: 600
+      poll: 15
+      ignore_errors: true
+    - name: "sysbench fileio ({{ scenario }})"
+      ansible.builtin.shell: |
+        SYSBENCH=$(which sysbench 2>/dev/null || echo /usr/local/bin/sysbench)
+        [ -x "$SYSBENCH" ] || { echo "SKIP: sysbench not found"; exit 0; }
+        mkdir -p {{ results_dir }}/sysbench/{{ scenario }}
+        cd {{ bench_path }}
+        $SYSBENCH fileio --file-total-size=4G prepare
+        for mode in seqrd seqwr rndrd rndwr rndrw; do
+          $SYSBENCH fileio --file-total-size=4G --file-test-mode=$mode --file-extra-flags=direct \
+            --time={{ sysbench_duration }} --threads={{ sysbench_threads }} run \
+            > {{ results_dir }}/sysbench/{{ scenario }}/${mode}.txt 2>&1
+        done
+        $SYSBENCH fileio --file-total-size=4G cleanup
+      args:
+        executable: /bin/bash
+      async: 1200
+      poll: 30
+    - name: "Phase 1a complete"
+      ansible.builtin.debug:
+        msg: "Phase 1a baseline virtiofs benchmarks complete"
+
+# =============================================================================
+# PHASE 1b: iSCSI loopback
+# =============================================================================
+- name: "Phase 1b: iSCSI loopback (overhead measurement)"
+  hosts: nfs_proxy
+  become: true
+  gather_facts: false
+  tags: [baseline, iscsi-loopback]
+  vars:
+    scenario: "iscsi-loopback"
+    loopback_mount: "/mnt/iscsi-loopback"
+    loopback_lun: "{{ filestorage_mount }}/iscsi-loopback-lun.img"
+    loopback_iqn: "iqn.2026-02.fr.scaleway:filestorage.loopback"
+  tasks:
+    - name: Create loopback LUN image (10G sparse)
+      ansible.builtin.shell: |
+        [ -f {{ loopback_lun }} ] || dd if=/dev/zero of={{ loopback_lun }} bs=1M count=1 seek=10239
+    - name: Add loopback target via tgtadm
+      ansible.builtin.shell: |
+        tgtadm --lld iscsi --mode target --op show | grep -q "{{ loopback_iqn }}" && exit 0
+        tgtadm --lld iscsi --mode target --op new --tid 2 --targetname {{ loopback_iqn }}
+        tgtadm --lld iscsi --mode logicalunit --op new --tid 2 --lun 1 \
+          --backing-store {{ loopback_lun }} --bstype aio
+        # Disable write cache for honest benchmarks
+        tgtadm --lld iscsi --mode logicalunit --op update --tid 2 --lun 1 \
+          --params mode_page=8:0:18:0x10:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0
+        tgtadm --lld iscsi --mode target --op bind --tid 2 --initiator-address 127.0.0.1
+      args:
+        executable: /bin/bash
+    - name: Connect loopback iSCSI
+      ansible.builtin.shell: |
+        iscsiadm -m discovery -t sendtargets -p 127.0.0.1
+        iscsiadm -m node -T {{ loopback_iqn }} -p 127.0.0.1 --login 2>/dev/null || true
+        sleep 2
+        DISK=$(lsblk -dpno NAME,TRAN | grep iscsi | awk '{print $1}' | head -1)
+        [ -n "$DISK" ] || { echo "ERROR: no iSCSI disk"; exit 1; }
+        mkfs.ext4 -F "$DISK"
+        mkdir -p {{ loopback_mount }}
+        mount "$DISK" {{ loopback_mount }}
+        mkdir -p {{ loopback_mount }}/bench
+      args:
+        executable: /bin/bash
+    - name: "fio benchmarks ({{ scenario }})"
+      ansible.builtin.shell: |
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        export BENCH_FILE="{{ loopback_mount }}/bench/testfile"
+        mkdir -p {{ results_dir }}/fio/{{ scenario }}
+        for profile in {{ benchmark_dir }}/fio-profiles/*.fio; do
+          name=$(basename "$profile" .fio)
+          fio "$profile" --output-format=json \
+            --output="{{ results_dir }}/fio/{{ scenario }}/${name}.json" 2>&1
+          sleep 5
+        done
+        rm -f "{{ loopback_mount }}/bench/testfile"
+      args:
+        executable: /bin/bash
+      async: 3600
+      poll: 30
+    - name: "ioping ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/ioping/{{ scenario }}
+        ioping -c {{ ioping_count }} -s {{ ioping_size }} {{ loopback_mount }}/bench \
+          > {{ results_dir }}/ioping/{{ scenario }}/sequential.txt 2>&1
+        ioping -c {{ ioping_count }} -s {{ ioping_size }} -R {{ loopback_mount }}/bench \
+          > {{ results_dir }}/ioping/{{ scenario }}/random.txt 2>&1
+      args:
+        executable: /bin/bash
+    - name: "dd throughput ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/dd/{{ scenario }}
+        dd if=/dev/zero of={{ loopback_mount }}/bench/dd-test bs=1M count=1024 conv=fdatasync \
+          2> {{ results_dir }}/dd/{{ scenario }}/write.txt
+        echo 3 > /proc/sys/vm/drop_caches
+        dd if={{ loopback_mount }}/bench/dd-test of=/dev/null bs=1M \
+          2> {{ results_dir }}/dd/{{ scenario }}/read.txt
+        rm -f {{ loopback_mount }}/bench/dd-test
+      args:
+        executable: /bin/bash
+    - name: "bonnie++ ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/bonnie/{{ scenario }}
+        bonnie++ -d {{ loopback_mount }}/bench -s {{ bonnie_size_mb }}M -n 256 -u root \
+          -q > {{ results_dir }}/bonnie/{{ scenario }}/bonnie.csv 2>&1
+        bon_csv2txt < {{ results_dir }}/bonnie/{{ scenario }}/bonnie.csv \
+          > {{ results_dir }}/bonnie/{{ scenario }}/bonnie.txt 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      async: 1800
+      poll: 30
+    - name: "sysbench fileio ({{ scenario }})"
+      ansible.builtin.shell: |
+        SYSBENCH=$(which sysbench 2>/dev/null || echo /usr/local/bin/sysbench)
+        [ -x "$SYSBENCH" ] || { echo "SKIP"; exit 0; }
+        mkdir -p {{ results_dir }}/sysbench/{{ scenario }}
+        cd {{ loopback_mount }}/bench
+        $SYSBENCH fileio --file-total-size=4G prepare
+        for mode in seqrd seqwr rndrd rndwr rndrw; do
+          $SYSBENCH fileio --file-total-size=4G --file-test-mode=$mode --file-extra-flags=direct \
+            --time={{ sysbench_duration }} --threads={{ sysbench_threads }} run \
+            > {{ results_dir }}/sysbench/{{ scenario }}/${mode}.txt 2>&1
+        done
+        $SYSBENCH fileio --file-total-size=4G cleanup
+      args:
+        executable: /bin/bash
+      async: 1200
+      poll: 30
+    - name: Cleanup iSCSI loopback
+      ansible.builtin.shell: |
+        umount {{ loopback_mount }} 2>/dev/null || true
+        iscsiadm -m node -T {{ loopback_iqn }} -p 127.0.0.1 --logout 2>/dev/null || true
+        iscsiadm -m node -T {{ loopback_iqn }} -p 127.0.0.1 -o delete 2>/dev/null || true
+        tgtadm --lld iscsi --mode target --op delete --tid 2 2>/dev/null || true
+        rm -f {{ loopback_lun }}
+      args:
+        executable: /bin/bash
+      ignore_errors: true
+    - name: "Phase 1b complete"
+      ansible.builtin.debug:
+        msg: "Phase 1b iSCSI loopback benchmarks complete"
+
+# =============================================================================
+# PHASE 2: VM benchmarks (ESXi / Proxmox)
+# =============================================================================
+- name: "Phase 2: VM benchmarks"
+  hosts: benchmark_vms
+  become: true
+  gather_facts: true
+  tags: [vm-bench]
+  vars:
+    scenario: "{{ bench_scenario | default('vm-bench-' + inventory_hostname) }}"
+    bench_path: "{{ bench_target_path | default(iscsi_mount_path + '/bench') }}"
+    bench_file: "{{ bench_path }}/testfile"
+  tasks:
+    - name: Verify/create benchmark target
+      ansible.builtin.shell: |
+        mkdir -p "{{ bench_path }}"
+        df -h "{{ bench_path }}" | tail -1
+      register: mount_check
+      changed_when: false
+    - name: Show target status
+      ansible.builtin.debug:
+        msg: "{{ scenario }}: {{ mount_check.stdout }}"
+    - name: "fio benchmarks ({{ scenario }})"
+      ansible.builtin.shell: |
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        export BENCH_FILE="{{ bench_file }}"
+        mkdir -p {{ results_dir }}/fio/{{ scenario }}
+        for profile in {{ benchmark_dir }}/fio-profiles/*.fio; do
+          name=$(basename "$profile" .fio)
+          fio "$profile" --output-format=json \
+            --output="{{ results_dir }}/fio/{{ scenario }}/${name}.json" 2>&1
+          sleep 5
+        done
+        rm -f "{{ bench_file }}"
+      args:
+        executable: /bin/bash
+      async: 3600
+      poll: 30
+    - name: "ioping ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/ioping/{{ scenario }}
+        ioping -c {{ ioping_count }} -s {{ ioping_size }} "{{ bench_path }}" \
+          > {{ results_dir }}/ioping/{{ scenario }}/sequential.txt 2>&1
+        ioping -c {{ ioping_count }} -s {{ ioping_size }} -R "{{ bench_path }}" \
+          > {{ results_dir }}/ioping/{{ scenario }}/random.txt 2>&1
+      args:
+        executable: /bin/bash
+    - name: "dd throughput ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/dd/{{ scenario }}
+        dd if=/dev/zero of={{ bench_path }}/dd-test bs=1M count=1024 conv=fdatasync \
+          2> {{ results_dir }}/dd/{{ scenario }}/write.txt
+        echo 3 > /proc/sys/vm/drop_caches
+        dd if={{ bench_path }}/dd-test of=/dev/null bs=1M \
+          2> {{ results_dir }}/dd/{{ scenario }}/read.txt
+        rm -f {{ bench_path }}/dd-test
+      args:
+        executable: /bin/bash
+    - name: "bonnie++ ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/bonnie/{{ scenario }}
+        bonnie++ -d {{ bench_path }} -s {{ bonnie_size_mb }}M -n 256 -u root \
+          -q > {{ results_dir }}/bonnie/{{ scenario }}/bonnie.csv 2>&1
+        bon_csv2txt < {{ results_dir }}/bonnie/{{ scenario }}/bonnie.csv \
+          > {{ results_dir }}/bonnie/{{ scenario }}/bonnie.txt 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      async: 1800
+      poll: 30
+    - name: "pgbench ({{ scenario }})"
+      ansible.builtin.shell: |
+        mkdir -p {{ results_dir }}/pgbench/{{ scenario }}
+        systemctl stop postgresql || true
+        PGDATA="{{ bench_path }}/pgdata"
+        mkdir -p "$PGDATA" && chown postgres:postgres "$PGDATA"
+        sudo -u postgres /usr/lib/postgresql/*/bin/initdb -D "$PGDATA" 2>&1 || true
+        sudo -u postgres /usr/lib/postgresql/*/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start 2>&1 || true
+        sleep 3
+        sudo -u postgres createdb benchdb 2>/dev/null || true
+        sudo -u postgres pgbench -i -s {{ pgbench_scale }} benchdb \
+          > {{ results_dir }}/pgbench/{{ scenario }}/init.log 2>&1
+        sudo -u postgres pgbench -S -c {{ pgbench_clients }} -T {{ pgbench_duration }} benchdb \
+          > {{ results_dir }}/pgbench/{{ scenario }}/readonly.txt 2>&1
+        sudo -u postgres pgbench -c {{ pgbench_clients }} -T {{ pgbench_duration }} benchdb \
+          > {{ results_dir }}/pgbench/{{ scenario }}/readwrite.txt 2>&1
+        sudo -u postgres /usr/lib/postgresql/*/bin/pg_ctl -D "$PGDATA" stop 2>/dev/null || true
+        systemctl start postgresql || true
+        rm -rf "$PGDATA"
+      args:
+        executable: /bin/bash
+      async: 600
+      poll: 15
+      ignore_errors: true
+    - name: "sysbench fileio ({{ scenario }})"
+      ansible.builtin.shell: |
+        SYSBENCH=$(which sysbench 2>/dev/null || echo /usr/local/bin/sysbench)
+        [ -x "$SYSBENCH" ] || { echo "SKIP"; exit 0; }
+        mkdir -p {{ results_dir }}/sysbench/{{ scenario }}
+        cd {{ bench_path }}
+        $SYSBENCH fileio --file-total-size=4G prepare
+        for mode in seqrd seqwr rndrd rndwr rndrw; do
+          $SYSBENCH fileio --file-total-size=4G --file-test-mode=$mode --file-extra-flags=direct \
+            --time={{ sysbench_duration }} --threads={{ sysbench_threads }} run \
+            > {{ results_dir }}/sysbench/{{ scenario }}/${mode}.txt 2>&1
+        done
+        $SYSBENCH fileio --file-total-size=4G cleanup
+      args:
+        executable: /bin/bash
+      async: 1200
+      poll: 30
+    - name: "Phase 2 complete for {{ inventory_hostname }}"
+      ansible.builtin.debug:
+        msg: "{{ scenario }} benchmarks complete"
+
+# =============================================================================
+# PHASE 3: MLPerf Storage (proxy, optional)
+# =============================================================================
+- name: "Phase 3: MLPerf Storage (virtiofs)"
+  hosts: nfs_proxy
+  become: true
+  gather_facts: false
+  tags: [mlperf]
+  vars:
+    scenario: "mlperf-virtiofs"
+  tasks:
+    - name: Check if MLPerf venv exists
+      ansible.builtin.stat:
+        path: "{{ benchmark_dir }}/mlperf-venv/bin/activate"
+      register: mlperf_venv
+    - name: Run MLPerf Storage benchmark
+      when: mlperf_venv.stat.exists
+      block:
+        - name: Generate and benchmark MLPerf data
+          ansible.builtin.shell: |
+            source {{ benchmark_dir }}/mlperf-venv/bin/activate
+            mkdir -p {{ results_dir }}/mlperf/{{ scenario }}
+            mkdir -p {{ filestorage_mount }}/mlperf-data
+            python3 << 'PYEOF'
+            import numpy as np, os, h5py, time, json
+            data_dir = '{{ filestorage_mount }}/mlperf-data'
+            results_file = '{{ results_dir }}/mlperf/{{ scenario }}/results.json'
+            os.makedirs(data_dir, exist_ok=True)
+            for i in range(50):
+                fp = os.path.join(data_dir, f'sample_{i:04d}.hdf5')
+                if not os.path.exists(fp):
+                    with h5py.File(fp, 'w') as f:
+                        f.create_dataset('data', data=np.random.randn(1,128,128,128).astype(np.float32))
+                        f.create_dataset('label', data=np.random.randint(0,3,(1,128,128,128)).astype(np.int8))
+            files = sorted([f for f in os.listdir(data_dir) if f.endswith('.hdf5')])
+            results = {'scenario': '{{ scenario }}', 'tests': []}
+            start = time.time()
+            total_bytes = 0
+            for f in files:
+                with h5py.File(os.path.join(data_dir, f), 'r') as hf:
+                    d, l = hf['data'][:], hf['label'][:]
+                    total_bytes += d.nbytes + l.nbytes
+            elapsed = time.time() - start
+            results['tests'].append({'name':'sequential_epoch','files':len(files),'total_mb':total_bytes/1e6,'elapsed_s':elapsed,'throughput_mbps':total_bytes/1e6/elapsed})
+            print(f'Sequential: {total_bytes/1e6:.0f} MB in {elapsed:.2f}s = {total_bytes/1e6/elapsed:.1f} MB/s')
+            shuffled = np.random.RandomState(42).permutation(files)
+            start = time.time()
+            total_bytes = 0
+            for f in shuffled:
+                with h5py.File(os.path.join(data_dir, f), 'r') as hf:
+                    d = hf['data'][:]
+                    total_bytes += d.nbytes
+            elapsed = time.time() - start
+            results['tests'].append({'name':'random_epoch','files':len(files),'total_mb':total_bytes/1e6,'elapsed_s':elapsed,'throughput_mbps':total_bytes/1e6/elapsed})
+            print(f'Random: {total_bytes/1e6:.0f} MB in {elapsed:.2f}s = {total_bytes/1e6/elapsed:.1f} MB/s')
+            with open(results_file, 'w') as f: json.dump(results, f, indent=2)
+            PYEOF
+          args:
+            executable: /bin/bash
+          async: 600
+          poll: 15
+          ignore_errors: true
+    - name: "Phase 3 complete"
+      ansible.builtin.debug:
+        msg: "MLPerf Storage benchmark complete"

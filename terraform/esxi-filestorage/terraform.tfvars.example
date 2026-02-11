@@ -1,0 +1,81 @@
+################################################################################
+# terraform.tfvars.example
+# Copy to terraform.tfvars and customize
+################################################################################
+
+# =============================================================================
+# Required
+# =============================================================================
+
+# SSH Key IDs (scw iam ssh-key list)
+ssh_key_ids = [
+  "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+]
+
+# ESXi root password
+esxi_service_password = "YourSecurePassword123!"
+
+# ESXi OS ID (scw baremetal os list zone=fr-par-1 | grep -i esxi)
+# scw baremetal os list zone=fr-par-2 | grep -i esxi
+esxi_os_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# =============================================================================
+# Server Configuration
+# =============================================================================
+
+# ESXi server type
+esxi_server_type = "EM-I210E-NVME"
+
+# Zones for ESXi hosts (one server per zone for comparison)
+# Remove zones that are out of stock (503 error)
+esxi_zones = ["fr-par-1"]
+# esxi_zones = ["fr-par-1", "fr-par-2"]  # When both have stock
+
+# NFS Proxy
+proxy_instance_type = "POP2-8C-32G"
+proxy_zone          = "fr-par-1"
+
+# =============================================================================
+# File Storage
+# =============================================================================
+
+filestorage_size_gb = 500
+
+# =============================================================================
+# Network
+# =============================================================================
+
+private_network_subnet = "172.16.100.0/24"
+# NOTE: proxy private IP is auto-assigned by DHCP/IPAM (not configurable)
+# After terraform apply, check outputs for the assigned IP
+
+# =============================================================================
+# Public Gateway / SSH Bastion
+# =============================================================================
+
+pgw_type         = "VPC-GW-S"
+pgw_bastion_port = 61000
+
+# =============================================================================
+# Proxmox Cluster Reference (Scenario A - optional)
+# Fill in if you have an existing Proxmox Ceph cluster to benchmark
+# =============================================================================
+
+# proxmox_nodes = {
+#   "pve1" = "51.x.x.1"
+#   "pve2" = "51.x.x.2"
+#   "pve3" = "51.x.x.3"
+# }
+
+# proxmox_private_ips = {
+#   "pve1" = "172.16.28.10"
+#   "pve2" = "172.16.28.11"
+#   "pve3" = "172.16.28.12"
+# }
+
+# =============================================================================
+# Output
+# =============================================================================
+
+generate_inventory   = true
+ssh_private_key_path = "~/.ssh/id_rsa"

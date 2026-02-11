@@ -1,0 +1,462 @@
+---
+# =============================================================================
+# 02 - Prepare Benchmark Tools + iSCSI Storage
+#
+# Targets:
+#   "nfs_proxy"      — baseline virtiofs tests (no iSCSI mount needed)
+#   "benchmark_vms"  — connects iSCSI LUN, formats ext4, mounts
+#
+# For VMs with bench_scenario "esxi-vm-iscsi-direct":
+#   Connects to iSCSI LUN 1 (vm direct), formats ext4, mounts
+#
+# For VMs with bench_scenario "esxi-vm-iscsi-datastore":
+#   No iSCSI setup needed — the VM disk is already on VMFS/iSCSI via ESXi
+#   Just installs tools and creates benchmark dirs
+# =============================================================================
+
+- name: Install Benchmark Tools
+  hosts: benchmark_vms:nfs_proxy
+  become: true
+  gather_facts: true
+
+  tasks:
+    # =========================================================================
+    # Core Benchmark Tools
+    # =========================================================================
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install benchmark packages
+      ansible.builtin.apt:
+        name:
+          - fio
+          - ioping
+          - bonnie++
+          - hdparm
+          - postgresql
+          - postgresql-contrib
+          - python3-psycopg2
+          - sysbench
+          - sysstat
+          - iotop
+          - htop
+          - dstat
+          - nmon
+          - python3-pip
+          - python3-venv
+          - git
+          - build-essential
+          - iperf3
+          - open-iscsi
+        state: present
+      register: apt_install
+
+    - name: Verify sysbench is installed
+      ansible.builtin.command: which sysbench
+      register: sysbench_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install sysbench from source if package unavailable
+      when: sysbench_check.rc != 0
+      block:
+        - name: Install sysbench build dependencies
+          ansible.builtin.apt:
+            name: [automake, libtool, libpq-dev, libaio-dev, pkg-config]
+            state: present
+
+        - name: Clone and build sysbench
+          ansible.builtin.shell: |
+            cd /tmp && rm -rf sysbench
+            git clone --depth 1 https://github.com/akopytov/sysbench.git
+            cd sysbench && ./autogen.sh && ./configure --without-mysql
+            make -j$(nproc) && make install && ldconfig
+          args:
+            executable: /bin/bash
+            creates: /usr/local/bin/sysbench
+
+    # =========================================================================
+    # Create Benchmark Directory Structure
+    # =========================================================================
+    - name: Create benchmark directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ benchmark_dir }}"
+        - "{{ benchmark_dir }}/scripts"
+        - "{{ benchmark_dir }}/fio-profiles"
+        - "{{ results_dir }}"
+        - "{{ results_dir }}/fio"
+        - "{{ results_dir }}/ioping"
+        - "{{ results_dir }}/bonnie"
+        - "{{ results_dir }}/pgbench"
+        - "{{ results_dir }}/sysbench"
+        - "{{ results_dir }}/mlperf"
+        - "{{ results_dir }}/dd"
+
+    # =========================================================================
+    # Deploy FIO Profiles (direct=1 everywhere — iSCSI handles it fine)
+    # =========================================================================
+    - name: Deploy fio profiles
+      ansible.builtin.copy:
+        content: "{{ item.content }}"
+        dest: "{{ benchmark_dir }}/fio-profiles/{{ item.name }}"
+        mode: '0644'
+      loop:
+        - name: random-read-4k.fio
+          content: |
+            [global]
+            ioengine=libaio
+            direct=1
+            bs=4k
+            iodepth={{ fio_iodepth }}
+            numjobs={{ fio_numjobs }}
+            runtime={{ fio_runtime }}
+            time_based
+            ramp_time={{ fio_ramp_time }}
+            group_reporting
+            size={{ fio_size }}
+            filename=${BENCH_FILE}
+            [random-read-4k]
+            rw=randread
+        - name: random-write-4k.fio
+          content: |
+            [global]
+            ioengine=libaio
+            direct=1
+            bs=4k
+            iodepth={{ fio_iodepth }}
+            numjobs={{ fio_numjobs }}
+            runtime={{ fio_runtime }}
+            time_based
+            ramp_time={{ fio_ramp_time }}
+            group_reporting
+            size={{ fio_size }}
+            fsync_on_close=1
+            filename=${BENCH_FILE}
+            [random-write-4k]
+            rw=randwrite
+        - name: mixed-randrw-4k.fio
+          content: |
+            [global]
+            ioengine=libaio
+            direct=1
+            bs=4k
+            iodepth={{ fio_iodepth }}
+            numjobs={{ fio_numjobs }}
+            runtime={{ fio_runtime }}
+            time_based
+            ramp_time={{ fio_ramp_time }}
+            group_reporting
+            size={{ fio_size }}
+            fsync_on_close=1
+            filename=${BENCH_FILE}
+            [mixed-randrw]
+            rw=randrw
+            rwmixread=70
+        - name: seq-read-1m.fio
+          content: |
+            [global]
+            ioengine=libaio
+            direct=1
+            bs=1m
+            iodepth=8
+            numjobs={{ fio_numjobs }}
+            runtime={{ fio_runtime }}
+            time_based
+            ramp_time={{ fio_ramp_time }}
+            group_reporting
+            size={{ fio_size }}
+            filename=${BENCH_FILE}
+            [seq-read-1m]
+            rw=read
+        - name: seq-write-1m.fio
+          content: |
+            [global]
+            ioengine=libaio
+            direct=1
+            bs=1m
+            iodepth=8
+            numjobs={{ fio_numjobs }}
+            runtime={{ fio_runtime }}
+            time_based
+            ramp_time={{ fio_ramp_time }}
+            group_reporting
+            size={{ fio_size }}
+            fsync_on_close=1
+            filename=${BENCH_FILE}
+            [seq-write-1m]
+            rw=write
+        - name: db-workload-8k.fio
+          content: |
+            [global]
+            ioengine=libaio
+            direct=1
+            bs=8k
+            iodepth=16
+            numjobs={{ fio_numjobs }}
+            runtime={{ fio_runtime }}
+            time_based
+            ramp_time={{ fio_ramp_time }}
+            group_reporting
+            size={{ fio_size }}
+            fsync_on_close=1
+            filename=${BENCH_FILE}
+            [db-workload]
+            rw=randrw
+            rwmixread=60
+        - name: latency-profile.fio
+          content: |
+            [global]
+            ioengine=libaio
+            direct=1
+            bs=4k
+            iodepth=1
+            numjobs=1
+            runtime={{ fio_runtime }}
+            time_based
+            ramp_time={{ fio_ramp_time }}
+            group_reporting
+            size={{ fio_size }}
+            percentile_list=50:90:95:99:99.9:99.99
+            filename=${BENCH_FILE}
+            [lat-read]
+            rw=randread
+            stonewall
+            [lat-write]
+            rw=randwrite
+            stonewall
+
+    # =========================================================================
+    # Deploy Benchmark Scripts
+    # =========================================================================
+    - name: Deploy benchmark scripts
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../benchmarks/scripts/{{ item }}"
+        dest: "{{ benchmark_dir }}/scripts/{{ item }}"
+        mode: '0755'
+      loop:
+        - run-all.sh
+        - run-fio.sh
+        - run-ioping.sh
+        - run-bonnie.sh
+        - run-pgbench.sh
+        - run-sysbench.sh
+        - run-dd.sh
+      ignore_errors: true
+
+    # =========================================================================
+    # Cleanup old NFS mounts (from previous benchmark runs)
+    # =========================================================================
+    - name: Cleanup stale NFS mounts
+      when: "'benchmark_vms' in group_names"
+      block:
+        - name: Force unmount old NFS if present
+          ansible.builtin.shell: |
+            umount -f /mnt/nfs-bench 2>/dev/null || true
+            umount -l /mnt/nfs-bench 2>/dev/null || true
+          changed_when: false
+          ignore_errors: true
+
+        - name: Remove old NFS from fstab
+          ansible.builtin.lineinfile:
+            path: /etc/fstab
+            regexp: 'nfs-bench|nfs4|nfs_mount'
+            state: absent
+
+        - name: Clean old NFS benchmark results
+          ansible.builtin.file:
+            path: "{{ results_dir }}/fio/esxi-vm-nfs-filestorage"
+            state: absent
+
+    # =========================================================================
+    # Fix PostgreSQL (may be broken from old NFS mount or corrupted data dir)
+    # Must run BEFORE "Create benchmark database"
+    # =========================================================================
+    - name: Fix PostgreSQL on benchmark VMs
+      when: "'benchmark_vms' in group_names"
+      block:
+        - name: Check if PostgreSQL socket exists
+          ansible.builtin.stat:
+            path: /var/run/postgresql/.s.PGSQL.5432
+          register: pg_socket
+
+        - name: Repair PostgreSQL if socket missing
+          when: not pg_socket.stat.exists
+          ansible.builtin.shell: |
+            set -e
+            systemctl stop postgresql 2>/dev/null || true
+            PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | head -1)
+            if [ -z "$PG_VERSION" ]; then echo "NO_PG"; exit 0; fi
+            # Drop and recreate the cluster entirely
+            pg_dropcluster --stop "$PG_VERSION" main 2>/dev/null || true
+            pg_createcluster "$PG_VERSION" main --start
+            echo "REPAIRED"
+          register: pg_repair
+          changed_when: "'REPAIRED' in pg_repair.stdout"
+          ignore_errors: true
+
+    # =========================================================================
+    # Configure PostgreSQL for pgbench
+    # =========================================================================
+    - name: Ensure PostgreSQL is started
+      ansible.builtin.systemd:
+        name: postgresql
+        state: started
+        enabled: true
+
+    - name: Create benchmark database
+      become_user: postgres
+      community.general.postgresql_db:
+        name: benchdb
+        state: present
+      ignore_errors: true
+
+    # =========================================================================
+    # MLPerf Storage Setup (optional)
+    # =========================================================================
+    - name: Create Python venv for MLPerf
+      ansible.builtin.command:
+        cmd: python3 -m venv {{ benchmark_dir }}/mlperf-venv
+        creates: "{{ benchmark_dir }}/mlperf-venv/bin/activate"
+
+    - name: Install MLPerf Storage dependencies
+      ansible.builtin.pip:
+        name: [numpy, h5py, pyyaml, tqdm]
+        virtualenv: "{{ benchmark_dir }}/mlperf-venv"
+      ignore_errors: true
+
+    # =========================================================================
+    # SCSI timeout tuning for iSCSI VMs
+    # Increase from 30s default to 120s to handle proxy latency spikes
+    # =========================================================================
+    - name: Tune SCSI timeout on benchmark VMs
+      when: "'benchmark_vms' in group_names"
+      block:
+        - name: Set iSCSI session timeouts
+          ansible.builtin.blockinfile:
+            path: /etc/iscsi/iscsid.conf
+            block: |
+              # Production-grade timeouts (default 30s is too aggressive)
+              node.session.timeo.replacement_timeout = 120
+              node.conn[0].timeo.noop_out_interval = 10
+              node.conn[0].timeo.noop_out_timeout = 15
+              # Queue depth — match tgtd thread count
+              node.session.queue_depth = 64
+            marker: "# {mark} ANSIBLE MANAGED - iSCSI TUNING"
+
+    # =========================================================================
+    # iSCSI mount — ONLY for direct-attach VMs (not datastore VMs)
+    # =========================================================================
+    - name: Configure iSCSI on direct-attach benchmark VMs
+      when:
+        - "'benchmark_vms' in group_names"
+        - "bench_scenario | default('') == 'esxi-vm-iscsi-direct'"
+      block:
+        - name: Configure iSCSI CHAP authentication
+          ansible.builtin.blockinfile:
+            path: /etc/iscsi/iscsid.conf
+            block: |
+              node.session.auth.authmethod = CHAP
+              node.session.auth.username = {{ iscsi_auth_user }}
+              node.session.auth.password = {{ iscsi_auth_pass }}
+            marker: "# {mark} ANSIBLE MANAGED - iSCSI CHAP"
+          notify: Restart iscsid
+
+        - name: Ensure iscsid is started
+          ansible.builtin.systemd:
+            name: iscsid
+            state: started
+            enabled: true
+
+        - name: Discover iSCSI targets
+          ansible.builtin.command: >
+            iscsiadm -m discovery -t sendtargets -p {{ proxy_private_ip }}
+          register: iscsi_discovery
+          changed_when: "'iqn.' in iscsi_discovery.stdout"
+
+        - name: Login to iSCSI target
+          ansible.builtin.command: >
+            iscsiadm -m node -T {{ iscsi_target_iqn }} -p {{ proxy_private_ip }} --login
+          register: iscsi_login
+          changed_when: "'successful' in iscsi_login.stdout"
+          failed_when: "iscsi_login.rc != 0 and 'already present' not in iscsi_login.stderr"
+
+        - name: Wait for iSCSI device to appear
+          ansible.builtin.shell: |
+            TARGET_LUN="{{ iscsi_lun_id | default(1) }}"
+            for i in $(seq 1 15); do
+              DISK=$(lsblk -dpno NAME,TRAN | grep iscsi | awk '{print $1}' | head -1)
+              [ -n "$DISK" ] && echo "$DISK" && exit 0
+              sleep 1
+            done
+            echo "TIMEOUT"; exit 1
+          register: iscsi_disk
+          changed_when: false
+
+        - name: Display iSCSI disk
+          ansible.builtin.debug:
+            msg: "iSCSI disk: {{ iscsi_disk.stdout }}"
+
+        - name: Check if iSCSI disk has filesystem
+          ansible.builtin.command: blkid {{ iscsi_disk.stdout }}
+          register: blkid_check
+          changed_when: false
+          failed_when: false
+
+        - name: Format iSCSI disk with ext4
+          ansible.builtin.command: mkfs.ext4 -F {{ iscsi_disk.stdout }}
+          when: blkid_check.rc != 0
+
+        - name: Create mount point
+          ansible.builtin.file:
+            path: "{{ iscsi_mount_path }}"
+            state: directory
+            mode: '0755'
+
+        - name: Mount iSCSI disk
+          ansible.posix.mount:
+            src: "{{ iscsi_disk.stdout }}"
+            path: "{{ iscsi_mount_path }}"
+            fstype: ext4
+            opts: defaults,_netdev,noatime,nobarrier
+            state: mounted
+
+        - name: Verify iSCSI mount
+          ansible.builtin.shell: df -h {{ iscsi_mount_path }} | tail -1
+          register: iscsi_mount_info
+          changed_when: false
+
+        - name: Display iSCSI mount
+          ansible.builtin.debug:
+            msg: "{{ iscsi_mount_info.stdout }}"
+
+    # =========================================================================
+    # For datastore VMs: just create benchmark dir on local disk
+    # =========================================================================
+    - name: Create benchmark target directory (datastore VMs)
+      when:
+        - "'benchmark_vms' in group_names"
+        - "bench_scenario | default('') == 'esxi-vm-iscsi-datastore'"
+      ansible.builtin.file:
+        path: "{{ bench_target_path | default('/mnt/bench') }}"
+        state: directory
+        mode: '0755'
+
+    - name: Benchmark tools ready
+      ansible.builtin.debug:
+        msg: |
+          ✅ Benchmark tools installed on {{ inventory_hostname }}
+          Scenario: {{ bench_scenario | default('baseline') }}
+          Directory: {{ benchmark_dir }}
+          Results:   {{ results_dir }}
+
+  handlers:
+    - name: Restart iscsid
+      ansible.builtin.systemd:
+        name: iscsid
+        state: restarted

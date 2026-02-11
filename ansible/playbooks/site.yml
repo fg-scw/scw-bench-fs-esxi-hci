@@ -1,0 +1,21 @@
+---
+# =============================================================================
+# Full Benchmark Pipeline (iSCSI Architecture)
+#
+# Usage:
+#   ansible-playbook playbooks/site.yml
+#   ansible-playbook playbooks/site.yml --tags baseline   # proxy only
+#   ansible-playbook playbooks/site.yml --tags vm-bench   # VMs only
+# =============================================================================
+
+- name: Configure Storage Proxy (virtiofs + iSCSI)
+  ansible.builtin.import_playbook: 01-proxy-storage.yml
+
+- name: Prepare Benchmark Tools
+  ansible.builtin.import_playbook: 02-benchmark-prep.yml
+
+- name: Run Benchmarks
+  ansible.builtin.import_playbook: 03-run-benchmarks.yml
+
+- name: Collect Results
+  ansible.builtin.import_playbook: 04-collect-results.yml

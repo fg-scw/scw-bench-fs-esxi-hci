@@ -1,0 +1,229 @@
+---
+# =============================================================================
+# 01 - Configure Storage Proxy (virtiofs + iSCSI target)
+#
+# Mounts File Storage via virtiofs, creates iSCSI LUNs, exposes via tgtd.
+#
+# LUN layout:
+#   LUN 1: iscsi-lun-vm.img    — direct iSCSI for Linux VMs (ext4)
+#   LUN 2: iscsi-lun-esxi.img  — VMFS6 datastore for ESXi
+#
+# Uses tgtadm + dump (NOT tgt-admin) to avoid the duplicate account bug.
+# =============================================================================
+
+- name: Configure Storage Proxy (virtiofs + iSCSI)
+  hosts: nfs_proxy
+  become: true
+  gather_facts: true
+
+  tasks:
+    # =========================================================================
+    # Verify File Storage Mount (virtiofs)
+    # =========================================================================
+    - name: Set virtiofs tag (UUID without region prefix)
+      ansible.builtin.set_fact:
+        filestorage_uuid: "{{ filestorage_id | regex_replace('^[a-z-]+/', '') }}"
+
+    - name: Check if File Storage is already mounted
+      ansible.builtin.shell: |
+        findmnt -t virtiofs -n 2>/dev/null | grep -q "{{ filestorage_uuid }}" && echo "mounted" || echo "not_mounted"
+      register: fs_check
+      changed_when: false
+
+    - name: Mount File Storage if not mounted
+      when: fs_check.stdout == "not_mounted"
+      block:
+        - name: Create mount point
+          ansible.builtin.file:
+            path: "{{ filestorage_mount }}"
+            state: directory
+            mode: '0755'
+
+        - name: Mount File Storage via virtiofs
+          ansible.builtin.command: mount -t virtiofs {{ filestorage_uuid }} {{ filestorage_mount }}
+
+        - name: Add to fstab
+          ansible.builtin.lineinfile:
+            path: /etc/fstab
+            line: "{{ filestorage_uuid }} {{ filestorage_mount }} virtiofs defaults 0 0"
+            state: present
+
+    - name: Verify File Storage mount
+      ansible.builtin.shell: df -h {{ filestorage_mount }} | tail -1
+      register: fs_size
+      changed_when: false
+
+    - name: Display File Storage status
+      ansible.builtin.debug:
+        msg: "{{ fs_size.stdout }}"
+
+    # =========================================================================
+    # Install tgt
+    # =========================================================================
+    - name: Install packages
+      ansible.builtin.apt:
+        name:
+          - tgt
+          - open-iscsi
+          - net-tools
+          - htop
+          - iotop
+          - sysstat
+        state: present
+        update_cache: yes
+
+    # =========================================================================
+    # Create iSCSI LUN backing files (sparse)
+    # =========================================================================
+    - name: Create LUN backing files
+      ansible.builtin.shell: |
+        FPATH="{{ iscsi_backing_dir }}/{{ item.file }}"
+        if [ ! -f "$FPATH" ]; then
+          dd if=/dev/zero of="$FPATH" bs=1M count=1 seek=$(( {{ item.size_gb }} * 1024 - 1 ))
+          echo "CREATED"
+        else
+          # Ensure correct size
+          truncate -s {{ item.size_gb }}G "$FPATH"
+          echo "EXISTS"
+        fi
+      register: lun_create
+      changed_when: "'CREATED' in lun_create.stdout"
+      loop:
+        - { file: "iscsi-lun-vm.img", size_gb: "{{ iscsi_lun_vm_size_gb }}" }
+        - { file: "iscsi-lun-esxi.img", size_gb: "{{ iscsi_lun_esxi_size_gb }}" }
+
+    - name: Verify LUN files
+      ansible.builtin.shell: ls -lh {{ iscsi_backing_dir }}/iscsi-lun-*.img
+      register: lun_info
+      changed_when: false
+
+    - name: Display LUN info
+      ansible.builtin.debug:
+        msg: "{{ lun_info.stdout_lines }}"
+
+    # =========================================================================
+    # Configure iSCSI target via tgtadm
+    #
+    # IMPORTANT: We use tgtadm directly, then dump the config.
+    # tgt-admin has a bug where it tries to bind the same CHAP account
+    # twice when there are multiple LUNs, causing systemd to fail.
+    # =========================================================================
+    - name: Stop tgtd cleanly
+      ansible.builtin.shell: |
+        systemctl stop tgt 2>/dev/null || true
+        pkill -9 tgtd 2>/dev/null || true
+        sleep 2
+      changed_when: false
+
+    - name: Remove any old tgt config files
+      ansible.builtin.file:
+        path: /etc/tgt/conf.d/filestorage-bench.conf
+        state: absent
+
+    - name: Start tgtd (empty config)
+      ansible.builtin.systemd:
+        name: tgt
+        state: started
+        enabled: true
+
+    - name: Wait for tgtd
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Configure iSCSI target via tgtadm
+      ansible.builtin.shell: |
+        set -e
+        # Check if target already exists
+        if tgtadm --lld iscsi --mode target --op show | grep -q "{{ iscsi_target_iqn }}"; then
+          echo "TARGET_EXISTS"
+          exit 0
+        fi
+        # Create target
+        tgtadm --lld iscsi --mode target --op new --tid 1 \
+          --targetname {{ iscsi_target_iqn }}
+
+        # Add LUN 1 (VM direct) — aio mode for async I/O, write-through
+        tgtadm --lld iscsi --mode logicalunit --op new --tid 1 --lun 1 \
+          --backing-store {{ iscsi_backing_dir }}/iscsi-lun-vm.img \
+          --bstype aio
+        # Add LUN 2 (ESXi datastore) — aio mode
+        tgtadm --lld iscsi --mode logicalunit --op new --tid 1 --lun 2 \
+          --backing-store {{ iscsi_backing_dir }}/iscsi-lun-esxi.img \
+          --bstype aio
+
+        # Disable Write Cache Enable (WCE) — forces write-through to backend
+        # This prevents ext4/VMFS write-back from inflating write IOPS
+        tgtadm --lld iscsi --mode logicalunit --op update --tid 1 --lun 1 \
+          --params mode_page=8:0:18:0x10:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0
+        tgtadm --lld iscsi --mode logicalunit --op update --tid 1 --lun 2 \
+          --params mode_page=8:0:18:0x10:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0
+
+        # Create CHAP account and bind (only once — no duplicate bug)
+        tgtadm --lld iscsi --mode account --op new \
+          --user {{ iscsi_auth_user }} --password {{ iscsi_auth_pass }}
+        tgtadm --lld iscsi --mode account --op bind --tid 1 \
+          --user {{ iscsi_auth_user }}
+        # ACL: allow private network + loopback for overhead tests
+        tgtadm --lld iscsi --mode target --op bind --tid 1 \
+          --initiator-address {{ private_network_subnet }}
+        tgtadm --lld iscsi --mode target --op bind --tid 1 \
+          --initiator-address 127.0.0.1
+        echo "TARGET_CREATED"
+      register: tgt_setup
+      changed_when: "'TARGET_CREATED' in tgt_setup.stdout"
+
+    - name: Verify WCE is disabled on LUNs
+      ansible.builtin.shell: |
+        tgtadm --lld iscsi --mode target --op show | grep -A5 "LUN: [12]" | grep -i "write cache\|WCE\|mode_page"
+      register: wce_check
+      changed_when: false
+      ignore_errors: true
+
+    - name: Persist tgtd config (dump running config)
+      ansible.builtin.shell: |
+        tgt-admin --dump > /etc/tgt/conf.d/filestorage-bench.conf
+      changed_when: false
+
+    # =========================================================================
+    # Network Tuning
+    # =========================================================================
+    - name: Network performance tuning
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: true
+        state: present
+        reload: yes
+      loop:
+        - { key: "net.core.rmem_max", value: "16777216" }
+        - { key: "net.core.wmem_max", value: "16777216" }
+        - { key: "net.core.rmem_default", value: "1048576" }
+        - { key: "net.core.wmem_default", value: "1048576" }
+        - { key: "net.ipv4.tcp_rmem", value: "4096 1048576 16777216" }
+        - { key: "net.ipv4.tcp_wmem", value: "4096 1048576 16777216" }
+        - { key: "net.core.netdev_max_backlog", value: "30000" }
+
+    # =========================================================================
+    # Verify
+    # =========================================================================
+    - name: Show iSCSI target status
+      ansible.builtin.shell: |
+        tgtadm --lld iscsi --mode target --op show | \
+          grep -E "Target|LUN:|Size|backing-store path|backing-store type"
+      register: tgt_status
+      changed_when: false
+
+    - name: Display iSCSI target
+      ansible.builtin.debug:
+        msg: "{{ tgt_status.stdout_lines }}"
+
+    - name: Storage Proxy ready
+      ansible.builtin.debug:
+        msg: |
+          ✅ Storage Proxy configured!
+          File Storage: {{ filestorage_mount }} (virtiofs)
+          iSCSI Target: {{ iscsi_target_iqn }}
+          iSCSI Portal: {{ proxy_private_ip }}:3260
+          LUN 1: iscsi-lun-vm.img ({{ iscsi_lun_vm_size_gb }}G) — VM direct iSCSI
+          LUN 2: iscsi-lun-esxi.img ({{ iscsi_lun_esxi_size_gb }}G) — ESXi VMFS datastore
+          Auth: CHAP ({{ iscsi_auth_user }})
