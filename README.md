@@ -1,7 +1,11 @@
-# Storage Benchmark: Ceph HCI vs Scaleway File Storage
+# Storage Benchmark : Scaleway File Storage via iSCSI (virtio-fs backend)
 
-Benchmark comparatif des performances de stockage entre un cluster Proxmox Ceph HCI
-et le service managé Scaleway File Storage (via proxy NFS sur Instance POP2).
+Benchmark des performances de stockage du **service managé Scaleway File Storage**,
+exposé aux VMs via un proxy iSCSI sur instance POP2.
+
+> **Pourquoi iSCSI et pas NFS ?**
+> L'approche initiale via NFS re-export a échoué. Voir la section
+> [Problématiques rencontrées](#problématiques-rencontrées) ci-dessous.
 
 ## Architecture
 
@@ -12,44 +16,95 @@ et le service managé Scaleway File Storage (via proxy NFS sur Instance POP2).
                         └──────────────────┬──────────────────────────┘
                                            │
                     Private Network: storage-bench-bench-pn (172.16.100.0/24)
-                    (régional fr-par, pas de route par défaut propagée)
                                            │
             ┌──────────────────────────────┼───────────────────────────────┐
             │                              │                               │
    ┌────────┴────────┐          ┌─────────┴─────────┐          ┌─────────┴────────┐
    │  POP2 Instance   │          │  EM ESXi fr-par-2  │          │  (Proxmox HCI)   │
-   │  NFS Proxy       │          │  172.16.100.20      │          │  hors Terraform  │
+   │  iSCSI Proxy     │          │  172.16.100.20      │          │  hors Terraform  │
    │  172.16.100.2    │          │                     │          │                  │
    │                  │          │  ┌───────────────┐  │          │  ┌────────────┐  │
-   │  File Storage    │   NFS    │  │ VM bench      │  │          │  │ VM bench   │  │
-   │  500Go virtiofs  │◄────────┤  │ 172.16.100.22 │  │          │  │ Ceph RBD   │  │
-   │  → export NFS    │         │  │ fabien/fabien  │  │          │  └────────────┘  │
-   └──────────────────┘          │  └───────────────┘  │          └──────────────────┘
-                                 └─────────────────────┘
+   │  File Storage    │  iSCSI   │  │ VM bench      │  │          │  │ VM bench   │  │
+   │  500 Go          │◄────────┤  │ 172.16.100.22 │  │          │  │ Ceph RBD   │  │
+   │  (virtio-fs)     │  LUN 1   │  │               │  │          │  └────────────┘  │
+   │  → tgtd LUNs     │         │  └───────────────┘  │          └──────────────────┘
+   └──────────────────┘          └─────────────────────┘
 ```
 
-## Principe de test
+### Chemin I/O détaillé
 
-Les benchmarks mesurent la performance **du point de vue des VMs** tournant sur les
-hyperviseurs. C'est le cas d'usage réel.
+```
+VM (fio/pgbench/...)
+  └─► iSCSI initiator (open-iscsi)
+       └─► Private Network (172.16.100.0/24)
+            └─► tgtd (proxy POP2, port 3260)
+                 └─► fichier image LUN (/mnt/filestorage/iscsi-lun-vm.img)
+                      └─► virtio-fs
+                           └─► Scaleway File Storage (service managé)
+```
 
-| Scénario | Chemin I/O | Ce qu'on mesure |
-|----------|-----------|-----------------|
-| **A** Proxmox → Ceph | VM → virtio-scsi → Ceph RBD → NVMe | Référence HCI |
-| **B** Proxmox → NFS → FS | VM → NFS mount → proxy → virtiofs → File Storage | FS via Proxmox |
-| **C** ESXi → NFS → FS | VM → NFS mount → proxy → virtiofs → File Storage | FS via ESXi |
+## Problématiques rencontrées
 
-En complément, deux baselines sur le proxy POP2 :
-- **baseline-virtiofs** : accès direct File Storage (perf max théorique)
-- **nfs-loopback** : NFS localhost (mesure l'overhead NFS pur)
+Le déploiement initial reposait sur un **export NFSv4** depuis le proxy POP2 vers les
+VMs ESXi. Cette approche a révélé des incompatibilités fondamentales :
 
-### ⚠️ Limitation virtiofs + NFS re-export
+### 1. Erreurs `ESTALE` (Stale File Handle)
 
-**virtiofs ne supporte pas la ré-exportation NFS stable.** Les file handles NFS
-deviennent invalides (`ESTALE`) car virtiofs ne garantit pas la persistance des inodes.
+Le re-export NFS d'un montage virtio-fs provoque la perte des descripteurs de fichiers.
+Lors de charges I/O intensives (FIO, pgbench), les file handles NFS deviennent invalides
+car **virtio-fs ne garantit pas la persistance des inodes** nécessaire au protocole NFS.
 
-**Conséquence** : impossible d'utiliser le File Storage comme datastore NFS ESXi.
-Les VMs benchmark montent le NFS **directement depuis la VM** (pas via l'hyperviseur).
+### 2. Incompatibilité virtio-fs / ESXi
+
+Le protocole virtio-fs est un canal local hôte-invité (KVM/QEMU). Il ne peut pas être
+attaché directement à une VM sur ESXi car l'hyperviseur VMware ne sait pas émuler ce
+type de matériel virtuel. L'accès au File Storage nécessite donc obligatoirement un
+proxy intermédiaire.
+
+### 3. Conflits de cache et d'inodes
+
+La gestion dynamique des inodes par le socle managé entre en conflit avec le cache du
+serveur NFS sur le proxy, provoquant des corruptions de session sous charge.
+
+### Solution retenue : iSCSI via tgtd
+
+Le proxy POP2 crée des **fichiers images sparse** sur le File Storage (monté en
+virtio-fs), puis les expose comme **LUNs iSCSI** via `tgtd`. Cette approche fonctionne
+car tgtd fait des I/O blocs sur un seul fichier — pas de gestion de file handles NFS.
+
+| Composant | Rôle |
+|-----------|------|
+| **Scaleway File Storage** | Stockage objet managé, monté en virtio-fs sur le proxy |
+| **tgtd (proxy POP2)** | Expose les fichiers images comme LUNs iSCSI sur le PN |
+| **open-iscsi (VMs)** | Initiateur iSCSI, monte les LUNs comme disques blocs |
+| **ext4 / VMFS6** | Filesystem sur les LUNs (ext4 pour Linux, VMFS6 pour ESXi) |
+
+---
+
+## Scénarios de benchmark
+
+| # | Scénario | Chemin I/O | Ce qu'on mesure |
+|---|----------|-----------|-----------------|
+| **1a** | `baseline-virtiofs` | Proxy → virtio-fs → File Storage | Performance max théorique |
+| **1b** | `iscsi-loopback` | Proxy → tgtd → loopback → iSCSI → ext4 | Overhead tgtd pur |
+| **2** | `esxi-vm-iscsi-direct` | VM ESXi → iSCSI → Proxy → virtio-fs → FS | Performance réelle depuis VM |
+| **A** | *(futur)* Proxmox → Ceph | VM → virtio-scsi → Ceph RBD → NVMe | Référence HCI |
+
+### Scénarios proxy (Phase 1)
+
+Exécutés directement sur l'instance POP2. Servent de baselines :
+
+- **baseline-virtiofs** : FIO/ioping/dd/pgbench directement sur le montage virtio-fs.
+  Représente la performance maximale atteignable du File Storage.
+- **iscsi-loopback** : Création d'une LUN temporaire sur le File Storage, connexion
+  iSCSI en localhost. Mesure l'overhead ajouté par tgtd (conversion bloc → fichier).
+
+### Scénarios VM (Phase 2)
+
+Exécutés depuis les VMs de benchmark sur ESXi :
+
+- **esxi-vm-iscsi-direct** : La VM monte directement la LUN 1 via son initiateur
+  iSCSI (open-iscsi). Le chemin traverse le Private Network jusqu'au proxy.
 
 ---
 
@@ -57,7 +112,7 @@ Les VMs benchmark montent le NFS **directement depuis la VM** (pas via l'hypervi
 
 - Terraform >= 1.5
 - Ansible >= 2.15
-- `sshpass` (pour l'auth par mot de passe des VMs benchmark) : `brew install sshpass` ou `apt install sshpass`
+- `sshpass` : `brew install sshpass` ou `apt install sshpass`
 - Clé SSH enregistrée dans le projet Scaleway
 - Compte Scaleway avec accès Elastic Metal + File Storage
 
@@ -77,137 +132,107 @@ terraform init && terraform apply
 Terraform déploie :
 - 1 VPC + 1 Private Network (`172.16.100.0/24`)
 - 1 Public Gateway avec SSH bastion (port 61000)
-- 1 Instance POP2 (NFS proxy) avec File Storage 500 Go en virtiofs
+- 1 Instance POP2 (proxy iSCSI) avec File Storage 500 Go en virtio-fs
 - 1 Elastic Metal ESXi
 
-**Notez les outputs** :
 ```bash
-terraform output bastion        # IP PGW + port bastion
-terraform output nfs_proxy      # IP privée du proxy (auto-assignée par IPAM)
-terraform output ssh_commands   # Commandes SSH via bastion
-terraform output nfs_mount_info # Commandes NFS pour les VMs
+terraform output bastion          # IP PGW + port bastion
+terraform output iscsi_proxy      # IP privée du proxy
+terraform output iscsi_setup      # Commandes iSCSI pour VMs et ESXi
+terraform output benchmark_summary
 ```
 
-### Étape 2 — Vérifier l'accès SSH via bastion
-
-```bash
-# Tester le bastion
-ssh -J bastion@<pgw_ip>:61000 root@storage-bench-nfs-proxy.storage-bench-bench-pn.internal
-
-# Ou avec l'IP directe
-ssh -J bastion@<pgw_ip>:61000 root@172.16.100.2
-```
-
-### Étape 3 — Configurer le proxy NFS
+### Étape 2 — Configurer le proxy iSCSI
 
 ```bash
 cd ansible/
-ansible-playbook playbooks/01-proxy-nfs.yml
+ansible-playbook playbooks/01-proxy-storage.yml
 ```
 
-Vérification attendue : `✅ NFS Proxy configured!` avec l'export 466 Go.
+Ce playbook :
+1. Vérifie le montage virtio-fs du File Storage
+2. Installe `tgtd`
+3. Crée les fichiers images LUN (sparse) sur le File Storage
+4. Configure le target iSCSI avec CHAP authentication
+5. Désactive le Write Cache (WCE) pour des benchmarks honnêtes
+6. Applique le tuning réseau TCP
 
-### Étape 4 — Configurer l'ESXi sur le Private Network
+Vérification attendue : `✅ Storage Proxy configured!`
+
+### Étape 3 — Configurer l'ESXi sur le Private Network
 
 La configuration réseau ESXi est **manuelle** via le web UI.
 
-#### 4.1 Récupérer le VLAN ID
+1. **Récupérer le VLAN ID** : Console Scaleway → Elastic Metal → onglet Private Networks
+2. **Ajouter un Port Group** : `Private Network`, VLAN ID, vSwitch0
+3. **Ajouter un VMkernel NIC** : IP `172.16.100.20/24` sur le Port Group
+4. **Configurer `VM Network`** : VLAN ID du Private Network
 
-Console Scaleway → Elastic Metal → serveur → onglet **Private Networks** → noter le **VLAN ID**
+### Étape 4 — Créer la VM benchmark sur ESXi
 
-#### 4.2 Ajouter un Port Group
+1. **Create VM** : 4 vCPU, 8 Go RAM, 50 Go disque **local** (NVMe)
+2. Network: `VM Network` (avec VLAN)
+3. Installer Ubuntu 24.04, IP statique `172.16.100.22/24`
 
-1. Web UI ESXi : `https://<esxi_public_ip>/ui`
-2. **Networking** → **Port groups** → **Add port group**
-3. Name: `Private Network`, VLAN ID: celui noté, Virtual switch: `vSwitch0`
-
-#### 4.3 Ajouter un VMkernel NIC
-
-1. **VMkernel NICs** → **Add VMkernel NIC**
-2. Port group: `Private Network`, Static, IP: `172.16.100.20`, Mask: `255.255.255.0`
-3. Services: cocher **Management**
-
-#### 4.4 (Optionnel) Basculer sur accès full Private Network
-
-> ⚠️ Coupe l'accès via IP publique directe. Nécessite un Static NAT sur la PGW.
-
-1. **TCP/IP stacks** → Edit Default → IPv4 gateway: IP de la PGW
-2. Ajouter Static NAT sur la PGW : port 443 → `172.16.100.20:443`
-3. Reconnecter via l'IP de la PGW
-4. Supprimer `vmk0` et le port group `Management Network`
-5. Éditer `VM Network` → ajouter le VLAN ID
-
-#### 4.5 Configurer le port group VM Network
-
-Éditer `VM Network` → VLAN ID = celui du Private Network.
-Les VMs pourront communiquer sur le PN (NFS proxy, PGW, etc.).
-
-### Étape 5 — Créer la VM benchmark sur ESXi
-
-1. **Virtual Machines** → **Create VM**
-2. Storage : datastore **local** (NVMe) — pas NFS (voir limitation virtiofs)
-3. CPU: 4 vCPU, RAM: 8 Go, Disk: 50 Go
-4. Network: `VM Network` (avec VLAN)
-5. Installer Ubuntu 24.04, configurer IP statique sur le PN (ex: `172.16.100.22/24`)
-
-### Étape 6 — Monter le NFS depuis la VM
+### Étape 5 — Installer les outils et connecter iSCSI
 
 ```bash
-# Depuis la VM benchmark
-apt install -y nfs-common
-mkdir -p /mnt/nfs-bench
+cd ansible/
 
-# NFSv4 (recommandé) - avec fsid=0, le chemin est "/"
-mount -t nfs4 -o rw,hard,nointr,rsize=1048576,wsize=1048576 \
-  <proxy_ip>:/ /mnt/nfs-bench
+# Éditer l'inventaire si nécessaire
+vim inventory/hosts.yml
 
-# Vérifier
-echo "test" > /mnt/nfs-bench/test && cat /mnt/nfs-bench/test
-
-# Persister
-echo "<proxy_ip>:/ /mnt/nfs-bench nfs4 rw,hard,nointr,rsize=1048576,wsize=1048576 0 0" >> /etc/fstab
-```
-
-### Étape 7 — Éditer l'inventaire Ansible
-
-Éditer `ansible/inventory/hosts.yml`, section `benchmark_vms` :
-
-```yaml
-    benchmark_vms:
-      vars:
-        ansible_ssh_extra_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
-      hosts:
-        esxi-bench-vm:
-          ansible_host: 172.16.100.22
-          ansible_user: fabien
-          ansible_password: fabien
-          ansible_become: true
-          ansible_become_password: fabien
-          bench_scenario: "esxi-vm-nfs-filestorage"
-          bench_target_path: "/mnt/nfs-bench/bench-esxi"
-```
-
-> **Important** : l'indentation YAML doit être exacte.
-> Chaque propriété du host est indentée de 2 espaces **sous** le nom du host.
-
-### Étape 8 — Installer les outils et lancer les benchmarks
-
-```bash
 # Vérifier la connectivité
-ansible -m ping esxi-bench-vm
+ansible -m ping esxi-bench-vm-direct
 ansible -m ping storage-bench-nfs-proxy
 
-# Installer les outils sur le proxy + VMs
+# Installer outils + connecter iSCSI + formater ext4
 ansible-playbook playbooks/02-benchmark-prep.yml
+```
 
-# Baselines sur le proxy
+Le playbook `02-benchmark-prep.yml` :
+1. Installe fio, ioping, bonnie++, pgbench, sysbench sur tous les hosts
+2. Configure CHAP et les timeouts iSCSI sur les VMs
+3. Connecte la LUN iSCSI, formate ext4, monte sur `/mnt/iscsi-bench`
+
+### Étape 6 — Lancer les benchmarks
+
+```bash
+# Phase 1 : Baselines sur le proxy (virtio-fs + iSCSI loopback)
 ansible-playbook playbooks/03-run-benchmarks.yml --tags baseline
 
-# Benchmarks sur les VMs
+# Phase 2 : Benchmarks VM (iSCSI direct depuis ESXi)
 ansible-playbook playbooks/03-run-benchmarks.yml --tags vm-bench
 
-# Collecter les résultats
+# Collecter et agréger les résultats
 ansible-playbook playbooks/04-collect-results.yml
+```
+
+---
+
+## Configuration iSCSI
+
+### Target (proxy POP2)
+
+| Paramètre | Valeur |
+|-----------|--------|
+| Target IQN | `iqn.2026-02.fr.scaleway:filestorage.bench` |
+| Portal | `172.16.100.2:3260` |
+| Auth | CHAP (`bench` / `benchpass123`) |
+| LUN 1 | `iscsi-lun-vm.img` (50 Go sparse) — accès direct VM |
+| LUN 2 | `iscsi-lun-esxi.img` (100 Go sparse) — datastore VMFS ESXi |
+| Backing type | `aio` (async I/O) |
+| Write Cache | **Désactivé** (write-through pour benchmarks honnêtes) |
+
+### Initiateur (VMs Linux)
+
+```bash
+# Configuration dans /etc/iscsi/iscsid.conf
+node.session.auth.authmethod = CHAP
+node.session.auth.username = bench
+node.session.auth.password = benchpass123
+node.session.timeo.replacement_timeout = 120
+node.session.queue_depth = 64
 ```
 
 ---
@@ -217,18 +242,17 @@ ansible-playbook playbooks/04-collect-results.yml
 Tout l'accès SSH passe par le **bastion de la Public Gateway** :
 
 ```bash
-# Syntaxe générale
-ssh -J bastion@<pgw_ip>:61000 <user>@<resource>.<pn>.internal
-
-# Exemples concrets
+# Proxy iSCSI
 ssh -J bastion@163.172.158.12:61000 root@storage-bench-nfs-proxy.storage-bench-bench-pn.internal
-ssh -J bastion@163.172.158.12:61000 root@storage-bench-esxi-par2.storage-bench-bench-pn.internal
-ssh -J bastion@163.172.158.12:61000 fabien@172.16.100.22
 
-# Ansible utilise ProxyJump automatiquement (configuré dans hosts.yml)
+# ESXi
+ssh -J bastion@163.172.158.12:61000 root@storage-bench-esxi-par2.storage-bench-bench-pn.internal
+
+# VM Benchmark
+ssh -J bastion@163.172.158.12:61000 fabien@172.16.100.22
 ```
 
-Pour simplifier, ajouter dans `~/.ssh/config` :
+Config `~/.ssh/config` recommandée :
 
 ```
 Host *.storage-bench-bench-pn.internal 172.16.100.*
@@ -241,19 +265,29 @@ Host *.storage-bench-bench-pn.internal 172.16.100.*
 
 ## Benchmarks exécutés
 
-### Stockage classique
-| Outil | Ce qu'il mesure |
-|-------|-----------------|
-| **fio** | IOPS, throughput, latence (7 profils) |
-| **ioping** | Latence I/O (séquentiel + random) |
-| **dd** | Throughput séquentiel brut |
-| **bonnie++** | Performances fichiers (create/read/delete) |
+### FIO (7 profils)
 
-### Workloads réalistes
-| Outil | Ce qu'il mesure |
-|-------|-----------------|
-| **pgbench** | Performances PostgreSQL (TPS, latence) |
-| **sysbench** | FileIO multi-mode (seqrd/seqwr/rndrd/rndwr) |
+| Profil | Block Size | Queue Depth | Jobs | Mesure |
+|--------|-----------|-------------|------|--------|
+| `random-read-4k` | 4K | 32 | 4 | IOPS lecture aléatoire |
+| `random-write-4k` | 4K | 32 | 4 | IOPS écriture aléatoire |
+| `mixed-randrw-4k` | 4K | 32 | 4 | IOPS mixte 70/30 |
+| `seq-read-1m` | 1M | 8 | 4 | Débit lecture séquentielle |
+| `seq-write-1m` | 1M | 8 | 4 | Débit écriture séquentielle |
+| `db-workload-8k` | 8K | 16 | 4 | Simulation workload base de données |
+| `latency-profile` | 4K | 1 | 1 | Latence pure (percentiles) |
+
+Tous les profils utilisent `direct=1` (O_DIRECT) et `ioengine=libaio`.
+
+### Autres outils
+
+| Outil | Mesure |
+|-------|--------|
+| **ioping** | Latence I/O séquentielle et aléatoire (4K) |
+| **dd** | Débit brut séquentiel (1 Go, blocs 1M) |
+| **bonnie++** | Performances fichiers (create/read/delete) |
+| **pgbench** | Performances PostgreSQL (TPS, latence) — scale 100, 10 clients |
+| **sysbench** | FileIO multi-mode (seqrd/seqwr/rndrd/rndwr/rndrw) |
 
 ---
 
@@ -262,30 +296,40 @@ Host *.storage-bench-bench-pn.internal 172.16.100.*
 ```
 storage-benchmark-scaleway/
 ├── terraform/esxi-filestorage/
-│   ├── main.tf               # locals, tags
-│   ├── versions.tf            # provider Scaleway >= 2.68
-│   ├── variables.tf           # toutes les variables
-│   ├── network.tf             # VPC, PN (no default route), IPAM
+│   ├── main.tf               # Locals, tags, configuration iSCSI
+│   ├── versions.tf            # Provider Scaleway >= 2.68
+│   ├── variables.tf           # Variables (iSCSI, réseau, ESXi)
+│   ├── network.tf             # VPC, PN, IPAM
 │   ├── gateway.tf             # Public Gateway + SSH bastion
-│   ├── filestorage.tf         # File Storage + POP2 proxy NFS
+│   ├── filestorage.tf         # File Storage + POP2 proxy iSCSI (tgtd)
 │   ├── esxi-servers.tf        # Elastic Metal ESXi
 │   ├── inventory.tf           # Inventaire Ansible (bastion ProxyJump)
-│   ├── outputs.tf             # SSH commands, NFS info, bastion
+│   ├── outputs.tf             # Commandes SSH, iSCSI setup, summary
 │   └── terraform.tfvars.example
 │
 ├── ansible/
-│   ├── ansible.cfg            # pas de ssh_args (laisse l'inventaire gérer)
+│   ├── ansible.cfg
 │   ├── inventory/
-│   │   ├── hosts.yml          # généré par TF, édité manuellement pour VMs
-│   │   └── group_vars/all.yml
+│   │   ├── hosts.yml          # Généré par TF, éditable pour VMs
+│   │   └── group_vars/all.yml # Config iSCSI, bastion, paramètres bench
 │   └── playbooks/
-│       ├── 01-proxy-nfs.yml
-│       ├── 02-benchmark-prep.yml
-│       ├── 03-run-benchmarks.yml
-│       └── 04-collect-results.yml
+│       ├── 01-proxy-storage.yml   # Proxy : virtio-fs + tgtd + LUNs iSCSI
+│       ├── 02-benchmark-prep.yml  # Outils + connexion iSCSI + formatage
+│       ├── 03-run-benchmarks.yml  # FIO, ioping, dd, bonnie++, pgbench, sysbench
+│       ├── 04-collect-results.yml # Collecte + rapport agrégé
+│       └── site.yml               # Pipeline complet
 │
 └── benchmarks/
     ├── scripts/
+    │   ├── run-all.sh
+    │   ├── run-fio.sh
+    │   ├── run-ioping.sh
+    │   ├── run-dd.sh
+    │   ├── run-bonnie.sh
+    │   ├── run-pgbench.sh
+    │   ├── run-sysbench.sh
+    │   ├── run-mlperf-storage.sh
+    │   └── collect-results.py
     └── results/
 ```
 
