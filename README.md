@@ -2,6 +2,31 @@
 
 Tests réels du 29 septembre 2026 sur un Elastic Metal ESXi 7.0.3 de test en `fr-par-2`, un File Storage de 500 Go et deux Instances Linux. Les chiffres ci-dessous sont les **médianes de trois passages** avec `fio`, un job, profondeur 1, `O_DIRECT=1`, fichier de 256 MiB. Ils décrivent cette configuration, pas un SLA.
 
+## Architecture testée
+
+```text
+                         +-------------------------+
+                         | File Storage (500 Go)   |
+                         +------------+------------+
+                                      | VirtioFS x2
+                         +------------+------------+
+                         |                         |
+                  +------v-------+          +------v-------+
+                  | Passerelle   |          | VM paire     |
+                  | POP2-4C-16G  |          | POP2-2C-8G  |
+                  +------+-------+          +--------------+
+                         +-- NFS direct ----------> VM paire + ESXi : ESTALE
+                         +-- ext4 loop -- NFS -----> VM paire + ESXi : test court OK,
+                         |                           4 KiB lent, coupure bloquante
+                         +-- image -- iSCSI -------> ESXi : VMFS6 echoue
+
+    VirtioFS direct sur les deux VMs : flock inter-VM echoue.
+    Disque local --> publication controlee --> File Storage : SHA-256 OK.
+    ESXi et VMs : meme reseau prive existant.
+```
+
+L'ESXi et le réseau privé existaient déjà. Le [Terraform minimal](terraform/validation/main.tf) décrit les ressources à créer pour **reproduire** le banc ; le déploiement ayant produit les résultats ci-dessous a été fait via CLI. Le [rapport](docs/validation-2026-09-29.md) donne la procédure de configuration et de mesure.
+
 ## Performances observées
 
 | Chemin testé | Écriture 1 MiB | Écriture aléatoire 4 KiB | Latence p99 4 KiB | Erreurs sur 3 passages |
@@ -29,6 +54,6 @@ Une publication de 512 MiB de données aléatoires depuis le disque local vers F
 
 **Décision actuelle :** pour des VMDK ESXi de production, garder un datastore VMware sur un stockage bloc/local/NFS prévu pour cet usage et utiliser File Storage pour les fichiers publiés ou sauvegardes validées par checksum. Pour des fichiers applicatifs partagés, l'accès VirtioFS direct avec verrou applicatif externe et travail temporaire sur disque local est le chemin le plus simple si l'application peut être adaptée. La passerelle NFS sur image ext4 reste une expérimentation pour les applications qui imposent `flock`.
 
-La [procédure complète, les paramètres, limites et références aux JSON bruts](docs/validation-2026-09-29.md) permettent de refaire les mesures. Le [banc minimal](benchmarks/validation/README.md) remplace les anciens scripts Terraform/Ansible de ce dépôt, qui ne contenaient pas de résultats vérifiables.
+La [procédure complète, les paramètres, limites et références aux JSON bruts](docs/validation-2026-09-29.md) permettent de refaire les mesures. Le [banc minimal](benchmarks/validation/README.md) remplace les anciens scripts de mesure, qui ne contenaient pas de résultats vérifiables.
 
 Licence : MIT.

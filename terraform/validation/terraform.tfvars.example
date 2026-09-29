@@ -1,0 +1,4 @@
+project_id           = "c96fe71c-bc1b-40a1-9559-eb37baeb627e"
+private_network_id   = "fr-par/a9ee13f1-da79-4547-9d49-ab264330fdb8"
+private_network_cidr = "172.16.12.0/22"
+ssh_cidr             = "203.0.113.10/32" # Replace with your public IP.

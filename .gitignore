@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 validation-results/
+.terraform/
+*.tfstate*
+*.tfplan
+terraform.tfvars
+*.auto.tfvars

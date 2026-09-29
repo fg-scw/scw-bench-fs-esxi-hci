@@ -17,6 +17,23 @@ L'ordre des cas était constant dans chaque série. Les médianes portent sur tr
 
 Ressources créées pour le test dans le projet fourni : File Storage `e94fcbcb-1e47-4e12-a793-3db92f36089c`, passerelle `ce4411ed-9379-4ff6-a92e-832f127b9a6f`, seconde VM `1c998975-871d-4c6a-bc24-130158013906`, groupe de sécurité `02acb10e-80ef-4403-bdc3-c2649e4e928d`. L'Elastic Metal existant n'a pas été redéployé. D'après les [tarifs de stockage](https://www.scaleway.com/en/pricing/storage/) et d'[Instances](https://www.scaleway.com/en/pricing/virtual-instances/) consultés ce jour, ces trois ressources représentent environ **0,331 €/h HT**, hors IP et disques système, tant qu'elles restent provisionnées.
 
+### Infrastructure reproductible
+
+Les ressources de ce passage ont été **créées via CLI Scaleway**, puis configurées manuellement dans les VMs. Le [Terraform de validation](../terraform/validation/main.tf) reprend le File Storage de 500 Go, les deux Instances POP2, leurs IP publiques, leur rattachement au réseau privé existant et des règles SSH/NFS restreintes. Il n'a **pas** été appliqué pour produire les mesures archivées. Il ne crée ni l'ESXi ni le VPC, et il n'installe pas l'image ext4 ni les exports NFS : suivre les étapes ci-dessous après `apply`.
+
+Pour créer un **nouveau banc**, dans `terraform/validation/` :
+
+```sh
+cp terraform.tfvars.example terraform.tfvars
+# Renseigner ssh_cidr avec votre IP publique /32 ; utiliser un projet/reseau de test.
+terraform init
+terraform plan
+terraform apply
+terraform output
+```
+
+Le fichier `terraform.tfvars` et l'état Terraform restent hors Git. **Ne pas lancer `apply` dans le projet des mesures existantes sans importer les ressources déjà présentes** : un état vide demanderait des doublons facturés. L'exemple cible ce projet pour faciliter le rapprochement avec les mesures ; remplacez ses identifiants pour un nouveau projet. La configuration de l'OS et du banc commence à l'étape 1 ci-dessous. Sur la passerelle, utiliser l'UUID du File Storage retourné par Terraform sans son préfixe régional pour la commande `mount -t virtiofs`.
+
 Après les essais, le datastore NFS direct défaillant a été retiré de l'ESXi, et l'initiateur iSCSI logiciel activé pour le test a été désactivé. La cible iSCSI, son export réseau et les fichiers de test échoués ont été retirés de la passerelle. Le datastore ESXi NFS sur image ext4 reste disponible pour inspection. Ses montages et exports ont été établis manuellement : **ils ne sont pas configurés pour redémarrer automatiquement** après un reboot de la passerelle.
 
 ## Mesures `fio` observées
