@@ -1,0 +1,15 @@
+{
+  "path": "/mnt/nfs-loop",
+  "duration_s": 30,
+  "successful_probes": 26,
+  "failure_periods": [],
+  "interruption_observed": false,
+  "recovery_observed": false,
+  "max_probe_s": 63.145,
+  "slow_probes": [
+    {
+      "started_at_s": 7.036,
+      "duration_s": 63.145
+    }
+  ]
+}

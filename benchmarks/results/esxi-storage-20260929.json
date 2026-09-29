@@ -1,0 +1,39 @@
+{
+  "date_utc": "2026-09-29",
+  "host": "ESXi 7.0.3 build 21930508, fr-par-2, private IP 172.16.12.5",
+  "checks": [
+    {
+      "path": "File Storage image -> tgt iSCSI -> ESXi VMFS6",
+      "lun_bytes": 8589934592,
+      "lun_discovered": true,
+      "datastore_created": false,
+      "api_error": "Failed to create VMFS on device naa.60000000000000000e00000000010001:1",
+      "vmkernel_evidence": "2026-09-29T16:17:37.599Z SCSI command 0x89 failed H:0x0 D:0x2 P:0x0 sense 0x5 0x20 0x0; 2026-09-29T16:17:39.666Z VMFS6 creation => Bad parameter"
+    },
+    {
+      "path": "File Storage virtiofs -> kernel NFSv4.1 -> ESXi",
+      "datastore_mounted": true,
+      "directory_created": true,
+      "vmdk_created": false,
+      "api_error": "A general system error occurred: Stale file handle",
+      "vmkernel_evidence": "2026-09-29T16:58:30.262Z NFS41FSOpGetObject: Stale file handle",
+      "hostd_evidence": "2026-09-29T16:58:33.494Z Failed to create virtual disk: Stale file handle"
+    },
+    {
+      "path": "File Storage image -> ext4 loop DIO=1 -> kernel NFSv4.1 -> ESXi",
+      "datastore_mounted": true,
+      "directory_created": true,
+      "thin_vmdk_16_mib_created": true,
+      "thin_vmdk_deleted": true,
+      "create_seconds": 0.59,
+      "delete_seconds": 0.584,
+      "after_nfs_service_restart": {
+        "thin_vmdk_created": true,
+        "thin_vmdk_deleted": true,
+        "create_seconds": 0.586,
+        "delete_seconds": 0.597
+      },
+      "note": "Functional smoke test only; no ESXi guest I/O or failure recovery test"
+    }
+  ]
+}

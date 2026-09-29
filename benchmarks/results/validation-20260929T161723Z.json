@@ -1,0 +1,243 @@
+{
+  "created_utc": "2026-09-29T16:15:00.897548+00:00",
+  "fio_size": "256M",
+  "fio_version": "fio-3.36",
+  "kernel": "6.8.0-139-generic",
+  "direct": 1,
+  "cases": {
+    "virtiofs": {
+      "path": "/mnt/filestorage",
+      "mount": "e94fcbcb-1e47-4e12-a793-3db92f36089c virtiofs rw,relatime",
+      "flock_local": {
+        "blocked_while_held": true,
+        "acquired_after_release": true,
+        "pass": true
+      },
+      "integrity": {
+        "bytes": 16777216,
+        "sha256_expected": "341aacac661ccb210720bedaa9ead5d668fe5ea41a73532fc147c71e34040df1",
+        "sha256_read": "341aacac661ccb210720bedaa9ead5d668fe5ea41a73532fc147c71e34040df1",
+        "pass": true
+      },
+      "fio": [
+        {
+          "profile": "seq-write",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "seq-write",
+              "direction": "write",
+              "iops": 58.063053,
+              "throughput_mib_s": 58.0630521774292,
+              "p50_us": 19791.872,
+              "p99_us": 22413.312,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        },
+        {
+          "profile": "seq-read",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "seq-read",
+              "direction": "read",
+              "iops": 52.566735,
+              "throughput_mib_s": 52.566734313964844,
+              "p50_us": 19791.872,
+              "p99_us": 21364.736,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        },
+        {
+          "profile": "rand-read-4k",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "rand-read-4k",
+              "direction": "read",
+              "iops": 772.411379,
+              "throughput_mib_s": 3.0172319412231445,
+              "p50_us": 1269.76,
+              "p99_us": 1826.816,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        },
+        {
+          "profile": "rand-write-4k",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "rand-write-4k",
+              "direction": "write",
+              "iops": 455.336166,
+              "throughput_mib_s": 1.778656005859375,
+              "p50_us": 2146.304,
+              "p99_us": 3391.488,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        },
+        {
+          "profile": "sync-write-4k",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "sync-write-4k",
+              "direction": "write",
+              "iops": 450.937266,
+              "throughput_mib_s": 1.7614736557006836,
+              "p50_us": 2146.304,
+              "p99_us": 3194.88,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        }
+      ]
+    },
+    "loop-ext4": {
+      "path": "/mnt/loop-validation",
+      "mount": "/dev/loop0 ext4   rw,noatime",
+      "flock_local": {
+        "blocked_while_held": true,
+        "acquired_after_release": true,
+        "pass": true
+      },
+      "integrity": {
+        "bytes": 16777216,
+        "sha256_expected": "341aacac661ccb210720bedaa9ead5d668fe5ea41a73532fc147c71e34040df1",
+        "sha256_read": "341aacac661ccb210720bedaa9ead5d668fe5ea41a73532fc147c71e34040df1",
+        "pass": true
+      },
+      "fio": [
+        {
+          "profile": "seq-write",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "seq-write",
+              "direction": "write",
+              "iops": 62.423799,
+              "throughput_mib_s": 62.42379856109619,
+              "p50_us": 19267.584,
+              "p99_us": 21102.592,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        },
+        {
+          "profile": "seq-read",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "seq-read",
+              "direction": "read",
+              "iops": 52.523595,
+              "throughput_mib_s": 52.52359390258789,
+              "p50_us": 19791.872,
+              "p99_us": 20840.448,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        },
+        {
+          "profile": "rand-read-4k",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "rand-read-4k",
+              "direction": "read",
+              "iops": 757.662117,
+              "throughput_mib_s": 2.9596176147460938,
+              "p50_us": 1302.528,
+              "p99_us": 1777.664,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        },
+        {
+          "profile": "rand-write-4k",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "rand-write-4k",
+              "direction": "write",
+              "iops": 449.202938,
+              "throughput_mib_s": 1.7546987533569336,
+              "p50_us": 2179.072,
+              "p99_us": 3358.72,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        },
+        {
+          "profile": "sync-write-4k",
+          "exit_code": 0,
+          "metrics": [
+            {
+              "job": "sync-write-4k",
+              "direction": "write",
+              "iops": 239.568237,
+              "throughput_mib_s": 0.9358129501342773,
+              "p50_us": 2244.608,
+              "p99_us": 3325.952,
+              "fio_error": 0
+            }
+          ],
+          "fio_errors": [
+            0
+          ],
+          "stderr": ""
+        }
+      ]
+    }
+  },
+  "loop_devices": "NAME       BACK-FILE                            DIO\n/dev/loop0 /mnt/filestorage/loop-validation.img   1",
+  "publish": {
+    "bytes": 67108864,
+    "seconds": 0.29410395399997924,
+    "publish_mib_s": 217.61013114432498,
+    "sha256_expected": "78b0b2ff94e2f771a49ecbe85df81586ee40a933b191949ca71df2d38aad58bd",
+    "sha256_read": "78b0b2ff94e2f771a49ecbe85df81586ee40a933b191949ca71df2d38aad58bd",
+    "pass": true,
+    "published_file": "/mnt/filestorage/publish-20260929T161721705611Z.bin"
+  }
+}

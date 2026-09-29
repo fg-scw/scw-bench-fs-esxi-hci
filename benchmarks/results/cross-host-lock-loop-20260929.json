@@ -1,0 +1,29 @@
+{
+  "created_utc": "2026-09-29T17:07:03.194808+00:00",
+  "probes": [
+    {
+      "case": "nfs-loop-ext4",
+      "holder": "proxy",
+      "contender": "peer",
+      "holder_ready": "HELD",
+      "holder_exit": 0,
+      "while_held_exit": 1,
+      "while_held_stdout": "",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "distributed_lock_pass": true
+    },
+    {
+      "case": "nfs-loop-ext4",
+      "holder": "peer",
+      "contender": "proxy",
+      "holder_ready": "HELD",
+      "holder_exit": 0,
+      "while_held_exit": 1,
+      "while_held_stdout": "",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "distributed_lock_pass": true
+    }
+  ]
+}

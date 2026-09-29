@@ -1,0 +1,53 @@
+{
+  "created_utc": "2026-09-29T16:59:29.910973+00:00",
+  "probes": [
+    {
+      "case": "virtiofs",
+      "holder": "proxy",
+      "contender": "peer",
+      "holder_ready": "HELD",
+      "holder_exit": 0,
+      "while_held_exit": 0,
+      "while_held_stdout": "ACQUIRED",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "distributed_lock_pass": false
+    },
+    {
+      "case": "virtiofs",
+      "holder": "peer",
+      "contender": "proxy",
+      "holder_ready": "HELD",
+      "holder_exit": 0,
+      "while_held_exit": 0,
+      "while_held_stdout": "ACQUIRED",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "distributed_lock_pass": false
+    },
+    {
+      "case": "nfs41",
+      "holder": "proxy",
+      "contender": "peer",
+      "holder_ready": "HELD",
+      "holder_exit": 0,
+      "while_held_exit": 1,
+      "while_held_stdout": "",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "distributed_lock_pass": true
+    },
+    {
+      "case": "nfs41",
+      "holder": "peer",
+      "contender": "proxy",
+      "holder_ready": "HELD",
+      "holder_exit": 0,
+      "while_held_exit": 1,
+      "while_held_stdout": "",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "distributed_lock_pass": true
+    }
+  ]
+}
