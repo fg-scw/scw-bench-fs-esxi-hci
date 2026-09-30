@@ -29,33 +29,59 @@ def lock_attempt(path):
             return 1
 
 
+LOCK_PROBE = """import sys
+try:
+    import fcntl
+    lock = open(sys.argv[1], "a")
+except Exception as exc:
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    sys.exit(2)
+
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(1)
+except Exception as exc:
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    sys.exit(2)
+sys.exit(0)
+"""
+
+
 def local_lock_check(path):
     with open(path, "a") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        blocked = subprocess.run([sys.executable, "-c", "import fcntl,sys; f=open(sys.argv[1],'a');\ntry: fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)\nsys.exit(0)", str(path)]).returncode
+        blocked = subprocess.run([sys.executable, "-c", LOCK_PROBE, str(path)],
+                                 capture_output=True, text=True)
         fcntl.flock(held, fcntl.LOCK_UN)
     available = lock_attempt(path)
-    return {"blocked_while_held": blocked == 1, "acquired_after_release": available == 0,
-            "pass": blocked == 1 and available == 0}
+    return {"blocked_while_held": blocked.returncode == 1, "acquired_after_release": available == 0,
+            "probe_exit_code": blocked.returncode,
+            "probe_error": blocked.stderr.strip() if blocked.returncode not in (0, 1) else "",
+            "pass": blocked.returncode == 1 and available == 0}
 
 
 def peer_lock_check(peer, peer_path, path):
     # The peer probe is intentionally read-only except for opening the probe file.
-    code = "import fcntl,sys; f=open(sys.argv[1],'a');\ntry: fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)\nsys.exit(0)"
-
     def attempt():
-        remote = "python3 -c {} {}".format(shlex.quote(code), shlex.quote(peer_path))
+        remote = "python3 -c {} {}".format(shlex.quote(LOCK_PROBE), shlex.quote(peer_path))
         return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", peer, remote],
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     with open(path, "a") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         blocked = attempt()
         fcntl.flock(held, fcntl.LOCK_UN)
     available = attempt()
-    return {"blocked_while_held": blocked == 1, "acquired_after_release": available == 0,
-            "ssh_or_probe_error": blocked not in (0, 1) or available not in (0, 1),
-            "pass": blocked == 1 and available == 0}
+    error = blocked.returncode not in (0, 1) or available.returncode not in (0, 1)
+    return {"peer": peer, "local_path": str(path), "peer_path": peer_path,
+            "blocked_while_held": blocked.returncode == 1,
+            "acquired_after_release": available.returncode == 0,
+            "while_held_exit_code": blocked.returncode,
+            "after_release_exit_code": available.returncode,
+            "ssh_or_probe_error": error,
+            "probe_error": (blocked.stderr or available.stderr).strip() if error else "",
+            "pass": blocked.returncode == 1 and available.returncode == 0 and not error}
 
 
 def fio_metrics(data):
@@ -215,6 +241,36 @@ def recovery_watch(path, seconds):
             "slow_probes": slow_probes}
 
 
+def write_result(output_dir, prefix, data):
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    output = output_dir / (prefix + "-" + stamp + ".json")
+    with output.open("x", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    return output
+
+
+def report_failed(report):
+    for case in report.get("cases", {}).values():
+        if case.get("error") or case.get("cleanup_error"):
+            return True
+        for key in ("integrity", "flock_local", "flock_inter_host"):
+            result = case.get(key)
+            if result is not None and not result.get("pass", False):
+                return True
+        for run in case.get("fio", []):
+            if run.get("error") or run.get("exit_code", 1) != 0:
+                return True
+            if any(code != 0 for code in run.get("fio_errors", [])):
+                return True
+            if any(metric.get("fio_error", 0) != 0 for metric in run.get("metrics", [])):
+                return True
+    if report.get("publish_error"):
+        return True
+    publish = report.get("publish")
+    return publish is not None and not publish.get("pass", False)
+
+
 def self_test():
     with tempfile.TemporaryDirectory() as temp:
         base = Path(temp)
@@ -233,7 +289,37 @@ def self_test():
         assert metrics[0]["p50_us"] == 0.01 and metrics[0]["p99_us"] == 0.09
         assert publish["pass"] and publish["bytes"] == 2 * 1024 * 1024
         Path(publish["published_file"]).unlink()
-    print("self-test: PASS (local flock, integrity, fio metrics, 2 MiB publish)")
+        from unittest.mock import patch
+        probe = subprocess.run([sys.executable, "-c", LOCK_PROBE, str(base / "missing" / "lock")],
+                               capture_output=True, text=True)
+        assert probe.returncode == 2 and "FileNotFoundError" in probe.stderr
+        with patch("subprocess.run", side_effect=[
+                subprocess.CompletedProcess(["ssh"], 2, "", "probe failed"),
+                subprocess.CompletedProcess(["ssh"], 0, "", "")]):
+            peer_lock = peer_lock_check("peer", str(base / "peer"), base / "peer-lock")
+        assert not peer_lock["pass"] and peer_lock["ssh_or_probe_error"]
+        assert peer_lock["while_held_exit_code"] == 2 and peer_lock["after_release_exit_code"] == 0
+        assert peer_lock["local_path"] == str(base / "peer-lock")
+        assert peer_lock["peer_path"] == str(base / "peer")
+        assert report_failed({"cases": {"nfs": {"error": {"errno": 116}}}})
+        assert report_failed({"cases": {"case": {"cleanup_error": {"errno": 5}}}})
+        assert report_failed({"cases": {"case": {"fio": [{"exit_code": 1, "fio_errors": [1]}]}}})
+        assert report_failed({"cases": {"case": {"integrity": {"pass": False}}}})
+        assert report_failed({"cases": {"case": {"flock_local": {"pass": False}}}})
+        assert report_failed({"publish": {"pass": False}})
+        assert not report_failed({"cases": {"case": {"fio": [{"exit_code": 0, "fio_errors": [0]}]}}})
+        fixed_time = datetime(2026, 9, 30, tzinfo=timezone.utc)
+        with patch(__name__ + ".datetime") as mock_datetime:
+            mock_datetime.now.return_value = fixed_time
+            archived = write_result(base, "exclusive", {"value": 1})
+            try:
+                write_result(base, "exclusive", {"value": 2})
+            except FileExistsError:
+                pass
+            else:
+                assert False, "write_result overwrote an existing result"
+        assert json.loads(archived.read_text()) == {"value": 1}
+    print("self-test: PASS (local/peer flock, error aggregation, integrity, fio metrics, publish)")
 
 
 def main():
@@ -264,8 +350,7 @@ def main():
         result = recovery_watch(args.watch.resolve(), args.watch_seconds)
         output_dir = args.out
         output_dir.mkdir(parents=True, exist_ok=True)
-        output = output_dir / ("recovery-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json")
-        output.write_text(json.dumps(result, indent=2) + "\n")
+        output = write_result(output_dir, "recovery", result)
         print(output)
         return 0
     if args.runtime < 1 or args.publish_size_mib < 1:
@@ -297,6 +382,7 @@ def main():
         parser.error("fio is required for --case runs")
     args.out.mkdir(parents=True, exist_ok=True)
     report = {"created_utc": datetime.now(timezone.utc).isoformat(), "fio_size": args.size,
+              "fio_runtime_seconds": args.runtime if args.case else None,
               "fio_version": subprocess.run(["fio", "--version"], capture_output=True, text=True).stdout.strip()
               if args.case else None, "kernel": os.uname().release,
               "direct": args.direct, "cases": {}}
@@ -333,11 +419,14 @@ def main():
                 except OSError as exc:
                     case["cleanup_error"] = {"errno": exc.errno, "message": str(exc)}
     if args.publish_to:
-        report["publish"] = publish_probe(args.publish_local, args.publish_to, args.publish_size_mib)
-    output = args.out / ("validation-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json")
-    output.write_text(json.dumps(report, indent=2) + "\n")
+        try:
+            report["publish"] = publish_probe(args.publish_local, args.publish_to, args.publish_size_mib)
+        except Exception as exc:
+            report["publish_error"] = {"type": type(exc).__name__, "message": str(exc),
+                                        "errno": getattr(exc, "errno", None)}
+    output = write_result(args.out, "validation", report)
     print(output)
-    return 0
+    return 1 if report_failed(report) else 0
 
 
 if __name__ == "__main__":

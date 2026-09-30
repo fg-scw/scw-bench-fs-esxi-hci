@@ -1,59 +1,64 @@
-# Scaleway File Storage avec ESXi : résultats de validation
+# File Storage, NFS et ESXi : résultats de validation
 
-Tests réels du 29 septembre 2026 sur un Elastic Metal ESXi 7.0.3 de test en `fr-par-2`, un File Storage de 500 Go et deux Instances Linux. Les chiffres ci-dessous sont les **médianes de trois passages** avec `fio`, un job, profondeur 1, `O_DIRECT=1`, fichier de 256 MiB. Ils décrivent cette configuration, pas un SLA.
+## Conclusion
 
-## Architecture testée
+Le NFSv4.1 direct sur VirtioFS échoue en `ESTALE` (3/3), malgré `flock` réussi entre deux hôtes. L'ext4 loopback passe un test court, mais écrit lentement en 4 KiB ; une coupure NFS de 6 s bloque une E/S 63,145 s.
+
+Pour les applications existantes, je retiendrais une passerelle NFS sur un vrai volume bloc ext4/XFS, à valider en charge. Les VMs ESXi monteraient NFS dans leur OS invité et tous les clients utiliseraient le même service. Cette alternative n'a pas été mesurée ici et ne conserve pas File Storage comme stockage primaire. Une seule passerelle reste un point de panne ; plusieurs serveurs indépendants ne suffisent pas à assurer la haute disponibilité.
+
+## Banc testé
 
 ```text
-                         +-------------------------+
-                         | File Storage (500 Go)   |
-                         +------------+------------+
-                                      | VirtioFS x2
-                         +------------+------------+
-                         |                         |
-                  +------v-------+          +------v-------+
-                  | Passerelle   |          | VM paire     |
-                  | POP2-4C-16G  |          | POP2-2C-8G  |
-                  +------+-------+          +--------------+
-                         +-- NFS direct ----------> VM paire + ESXi : ESTALE
-                         +-- ext4 loop -- NFS -----> VM paire + ESXi : test court OK,
-                         |                           4 KiB lent, coupure bloquante
-                         +-- image -- iSCSI -------> ESXi : VMFS6 echoue
+File Storage 500 Go
+  +-- VirtioFS --> Passerelle --+-- NFS direct ---------> client Linux / ESXi
+  |                           +-- image ext4 --> NFS -> client Linux / ESXi
+  +-- VirtioFS --> Seconde Instance (comparaison en accès direct)
 
-    VirtioFS direct sur les deux VMs : flock inter-VM echoue.
-    Disque local --> publication controlee --> File Storage : SHA-256 OK.
-    ESXi et VMs : meme reseau prive existant.
+Alternative non testée : volume bloc --> ext4/XFS --> NFS --> applications
+Autres essais : image --> iSCSI --> ESXi/VMFS6 (échec)
+               disque local --> publication File Storage (SHA-256 OK)
 ```
 
-L'ESXi et le réseau privé existaient déjà. Le [Terraform minimal](terraform/validation/main.tf) décrit les ressources à créer pour **reproduire** le banc ; le déploiement ayant produit les résultats ci-dessous a été fait via CLI. Le [rapport](docs/validation-2026-09-29.md) donne la procédure de configuration et de mesure.
+Essais du 29 septembre 2026 : ESXi 7.0.3, deux Instances et File Storage en
+`fr-par-2`. Les Instances et File Storage ont été déployés via CLI puis configurés manuellement ; l'ESXi existait déjà. Le [Terraform](terraform/validation/main.tf) décrit le banc, sans avoir été appliqué pour ces mesures.
 
-## Performances observées
+## Performances `fio`
 
-| Chemin testé | Écriture 1 MiB | Écriture aléatoire 4 KiB | Latence p99 4 KiB | Erreurs sur 3 passages |
+Médianes de trois passages, fichier 256 MiB, un job, profondeur 1,
+`O_DIRECT=1`. Écritures aléatoires 4 KiB ; p99 de leur latence d'achèvement.
+
+| Chemin | Écriture 1 MiB | Écriture aléatoire 4 KiB | p99 4 KiB | Erreurs |
 |---|---:|---:|---:|---|
-| VirtioFS direct, passerelle | 57,9 MiB/s | 455 IOPS | 3,29 ms | Aucune dans `fio` |
-| Image ext4 en loopback sur VirtioFS, passerelle | 62,4 MiB/s | 449 IOPS | 3,36 ms | Aucune dans `fio` |
-| VirtioFS direct, seconde VM | 57,9 MiB/s | 462 IOPS | 3,23 ms | Aucune dans `fio` |
-| NFSv4.1 réexportant directement VirtioFS, seconde VM | — | — | — | `ESTALE` avant `fio`, 3/3 |
-| NFSv4.1 réexportant l'image ext4, seconde VM | 47,2 MiB/s | 105 IOPS | 14,48 ms | Aucune dans `fio` |
+| VirtioFS direct, passerelle | 57,9 MiB/s | 455 IOPS | 3,29 ms | 0/3 |
+| ext4 loopback, passerelle | 62,4 MiB/s | 449 IOPS | 3,36 ms | 0/3 |
+| VirtioFS direct, seconde VM | 57,9 MiB/s | 462 IOPS | 3,23 ms | 0/3 |
+| NFS sur VirtioFS direct, seconde VM | — | — | — | `ESTALE` avant `fio`, 3/3 |
+| NFS sur ext4 loopback, seconde VM | 47,2 MiB/s | 105 IOPS | 14,48 ms | 0/3 |
 
-Le chemin NFS sur image ext4 fonctionne, mais ses écritures aléatoires 4 KiB sont environ **4,4 fois plus lentes** que l'accès VirtioFS direct sur la même VM. Les lectures NFS mesurées après échauffement sont servies en partie par les caches et ne démontrent pas le débit du File Storage.
+À profondeur 1, les chiffres n'indiquent pas le maximum d'IOPS ; les lectures
+en cache ne donnent pas le débit soutenu. Trois passages ne valident pas la charge concurrente.
+L'écriture 4 KiB NFS/ext4 est 4,4 fois plus lente que VirtioFS direct.
 
-Une publication de 512 MiB de données aléatoires depuis le disque local vers File Storage a réussi avec SHA-256 identique après relecture, en 9,25 s (55,3 MiB/s sur ce passage).
+## Verrous, handles et ESXi
 
-## Fonctionnement et erreurs
+| Chemin applicatif | `flock` entre hôtes | Handles / résultat |
+|---|---|---|
+| VirtioFS direct | Échec dans les deux sens | Les deux hôtes acquièrent le même verrou exclusif |
+| NFSv4.1 sur VirtioFS direct | Passe dans les deux sens | Opérations de fichiers en `ESTALE`, 3/3 |
+| NFSv4.1 sur image ext4 loopback | Passe dans les deux sens | Fonctionne au test court ; interruption NFS très bloquante |
 
-| Chemin | `flock` entre deux VMs | Test ESXi | Verdict |
-|---|---|---|---|
-| VirtioFS direct | **Échec dans les deux sens** : le second hôte acquiert le verrou déjà détenu | ESXi ne monte pas VirtioFS | Convient seulement aux applications qui gèrent elles-mêmes la coordination distribuée. |
-| VirtioFS → NFSv4.1 | Verrou respecté dans les deux sens | Le datastore monte, mais création d'un VMDK : **`Stale file handle`** | À écarter pour les VMDK. |
-| Image VirtioFS → cible iSCSI `tgt` → VMFS6 | Non testé | LUN découvert ; création VMFS6 échoue après commande SCSI `0x89` rejetée | À écarter dans cette configuration. |
-| Image ext4 loopback → NFSv4.1 | Verrou respecté dans les deux sens | Datastore monté ; 20 VMDK fins de 16 MiB créés puis supprimés sans erreur | Piste fonctionnelle, mais une interruption NFS de 6 s a bloqué une E/S cliente **63,1 s** ; pas prête pour la production. |
+ESXi : l'export direct monte mais échoue à créer un VMDK ; ext4 a passé 20 créations/suppressions de VMDK 16 MiB, sans VM démarrée ; iSCSI/VMFS6 échoue après découverte du LUN.
 
-`fallocate` sur le File Storage a renvoyé `Operation not supported` ; l'image de 8 GiB a été créée avec `truncate`, puis montée avec `losetup --direct-io=on` (`DIO=1`). Le loopback ne garantit donc pas à lui seul la disparition des erreurs du stockage sous-jacent et impose **un seul monteur de l'image en écriture**.
+Un verrou externe peut coordonner les applications adaptées. Il ne répare pas
+les handles, n'invalide pas les caches et n'empêche pas à lui seul un ancien
+détenteur d'écrire après expiration de son verrou. Un seul hôte doit monter l'image ext4 en
+écriture ; `fallocate` étant indisponible, elle a été créée avec `truncate`.
 
-**Décision actuelle :** pour des VMDK ESXi de production, garder un datastore VMware sur un stockage bloc/local/NFS prévu pour cet usage et utiliser File Storage pour les fichiers publiés ou sauvegardes validées par checksum. Pour des fichiers applicatifs partagés, l'accès VirtioFS direct avec verrou applicatif externe et travail temporaire sur disque local est le chemin le plus simple si l'application peut être adaptée. La passerelle NFS sur image ext4 reste une expérimentation pour les applications qui imposent `flock`.
+## Rapport et preuves
 
-La [procédure complète, les paramètres, limites et références aux JSON bruts](docs/validation-2026-09-29.md) permettent de refaire les mesures. Le [banc minimal](benchmarks/validation/README.md) remplace les anciens scripts de mesure, qui ne contenaient pas de résultats vérifiables.
+- [Rapport complet, procédure et limites](docs/validation-2026-09-29.md)
+- [Banc `fio`](benchmarks/validation/README.md) · [script](benchmarks/validation/run.py)
+- [Terraform de validation](terraform/validation/main.tf)
+- [Résultats bruts JSON](benchmarks/results/)
 
 Licence : MIT.
