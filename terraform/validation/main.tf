@@ -41,6 +41,13 @@ resource "scaleway_file_filesystem" "validation" {
   tags       = ["validation", "esxi"]
 }
 
+resource "scaleway_block_volume" "nfs_validation" {
+  name       = "nfs-validation-block"
+  size_in_gb = 10
+  iops       = 15000
+  tags       = ["validation", "nfs"]
+}
+
 resource "scaleway_instance_security_group" "gateway" {
   name                    = "fs-validation-gateway"
   inbound_default_policy  = "drop"
@@ -75,13 +82,14 @@ resource "scaleway_instance_ip" "gateway" {}
 resource "scaleway_instance_ip" "peer" {}
 
 resource "scaleway_instance_server" "gateway" {
-  name              = "fs-validation-gateway"
-  type              = "POP2-4C-16G"
-  image             = "ubuntu_noble"
-  state             = "started"
-  ip_id             = scaleway_instance_ip.gateway.id
-  security_group_id = scaleway_instance_security_group.gateway.id
-  tags              = ["validation", "gateway"]
+  name                  = "fs-validation-gateway"
+  type                  = "POP2-4C-16G"
+  image                 = "ubuntu_noble"
+  state                 = "started"
+  ip_id                 = scaleway_instance_ip.gateway.id
+  security_group_id     = scaleway_instance_security_group.gateway.id
+  tags                  = ["validation", "gateway"]
+  additional_volume_ids = [scaleway_block_volume.nfs_validation.id]
 
   filesystems {
     filesystem_id = scaleway_file_filesystem.validation.id
@@ -112,6 +120,10 @@ resource "scaleway_instance_server" "peer" {
 
 output "file_storage_id" {
   value = scaleway_file_filesystem.validation.id
+}
+
+output "block_volume_id" {
+  value = scaleway_block_volume.nfs_validation.id
 }
 
 output "gateway_public_ip" {

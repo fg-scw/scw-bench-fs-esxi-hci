@@ -1,6 +1,6 @@
 # Validation du stockage — 29 septembre 2026
 
-Ce rapport rassemble les observations du banc et leurs limites. Les liens vers `benchmarks/results/` pointent vers les preuves brutes ; aucun résultat nouveau n’a été ajouté ici.
+Ce rapport rassemble les observations du banc du 29 septembre et leurs limites. Le [suivi du 30 septembre](validation-2026-09-30.md) ajoute les mesures d’un volume bloc SBS 15k avec ext4 exporté par NFS 4.1. Les liens vers `benchmarks/results/` pointent vers les preuves brutes.
 
 ## Contexte et mesures
 
@@ -138,6 +138,6 @@ Pour les **fichiers applicatifs RWX**, VirtioFS direct donne les mesures les plu
 
 L’ext4 loopback sur NFS passe les contrôles de verrou et le court essai VMDK, mais écrit à 105 IOPS en 4 KiB avec p99 14,48 ms ; l’arrêt NFS de 6 s a bloqué une sonde 63,145 s. Ne pas le retenir comme solution de production sur ces seules mesures. La piste standard à valider est un **vrai volume bloc monté en ext4 ou XFS sur une passerelle unique puis exporté par NFS** ; elle n’a pas été mesurée ici.
 
-Restent à valider les charges applicatives réelles, plusieurs écrivains, la cohérence, les pannes/reboots de passerelle, `fsck` et restauration, les écritures non synchronisées, la durée sous charge et les mécanismes de haute disponibilité/sauvegarde. Aucun test VMDK n’a démarré de VM.
+Le [suivi du 30 septembre](validation-2026-09-30.md) teste cette piste : débit et verrous améliorés, mais attente de `flock` de 30,1 s sous contention et sonde bloquée 19 s lors d’une coupure NFS de 6 s. Les données ont été conservées dans ces essais courts. La faible latence sous contention, les pannes de passerelle, la restauration et la haute disponibilité restent à valider.
 
 Références NFS : [documentation du noyau Linux sur les exports](https://docs.kernel.org/filesystems/nfs/exporting.html) et [page de manuel `nfs(5)`](https://man7.org/linux/man-pages/man5/nfs.5.html).

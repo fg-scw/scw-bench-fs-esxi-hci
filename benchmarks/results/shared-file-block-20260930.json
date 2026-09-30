@@ -1,0 +1,28 @@
+{
+  "created_utc": "2026-09-30T08:43:11.747320+00:00",
+  "workload": "two hosts concurrently update one 4KiB file, flock + fsync, 100 increments each",
+  "workers": {
+    "gateway": {
+      "exit_code": 0,
+      "path": "/mnt/nfs-block-client/shared-counter-20260930-concurrent.bin",
+      "stdout": "{\"increments\": 100, \"seconds\": 30.903, \"started_utc\": \"2026-09-30T08:43:11.814546+00:00\", \"finished_utc\": \"2026-09-30T08:43:42.718057+00:00\"}",
+      "stderr": ""
+    },
+    "peer": {
+      "exit_code": 0,
+      "path": "/mnt/nfs-block/shared-counter-20260930-concurrent.bin",
+      "stdout": "{\"increments\": 100, \"seconds\": 0.896, \"started_utc\": \"2026-09-30T08:43:11.813157+00:00\", \"finished_utc\": \"2026-09-30T08:43:12.709349+00:00\"}",
+      "stderr": ""
+    }
+  },
+  "start_barrier": "Both remote workers READY before GO on their stdin",
+  "delay_between_increments_seconds": 0.005,
+  "worker_code_template": "import fcntl,json,os,sys,time\nfrom datetime import datetime,timezone\nprint('READY',flush=True)\nassert sys.stdin.readline().strip()=='GO'\nstarted_utc=datetime.now(timezone.utc).isoformat()\nstart=time.monotonic()\nwith open('/mnt/nfs-block/shared-counter-20260930-concurrent.bin','r+b',buffering=0) as f:\n for i in range(100):\n  fcntl.flock(f,fcntl.LOCK_EX)\n  f.seek(0);data=f.read(4096)\n  assert len(data)==4096 and data[10:]==b'X'*4086\n  value=int(data[:10])+1\n  f.seek(0);assert f.write(f\"{value:010d}\".encode()+b'X'*4086)==4096\n  os.fsync(f.fileno())\n  fcntl.flock(f,fcntl.LOCK_UN)\n  time.sleep(0.005)\nprint(json.dumps({'increments':100,'seconds':round(time.monotonic()-start,3),'started_utc':started_utc,'finished_utc':datetime.now(timezone.utc).isoformat()}))\n",
+  "final": {
+    "counter": 200,
+    "size": 4096,
+    "payload_valid": true
+  },
+  "worker_intervals_overlap": true,
+  "pass": true
+}

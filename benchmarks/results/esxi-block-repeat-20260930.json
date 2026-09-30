@@ -1,0 +1,148 @@
+{
+  "created_utc": "2026-09-30T08:35:04.452890+00:00",
+  "datastore": "fs-validation-block-nfs-20260930",
+  "vmdk_size_mib": 16,
+  "disk_type": "thin",
+  "iterations": [
+    {
+      "iteration": 0,
+      "create_seconds": 0.171,
+      "create_state": "success",
+      "delete_seconds": 0.042,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 1,
+      "create_seconds": 0.171,
+      "create_state": "success",
+      "delete_seconds": 0.043,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 2,
+      "create_seconds": 0.165,
+      "create_state": "success",
+      "delete_seconds": 0.163,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 3,
+      "create_seconds": 0.163,
+      "create_state": "success",
+      "delete_seconds": 0.165,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 4,
+      "create_seconds": 0.167,
+      "create_state": "success",
+      "delete_seconds": 0.042,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 5,
+      "create_seconds": 0.167,
+      "create_state": "success",
+      "delete_seconds": 0.166,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 6,
+      "create_seconds": 0.172,
+      "create_state": "success",
+      "delete_seconds": 0.168,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 7,
+      "create_seconds": 0.167,
+      "create_state": "success",
+      "delete_seconds": 0.165,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 8,
+      "create_seconds": 0.17,
+      "create_state": "success",
+      "delete_seconds": 0.041,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 9,
+      "create_seconds": 0.167,
+      "create_state": "success",
+      "delete_seconds": 0.181,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 10,
+      "create_seconds": 0.178,
+      "create_state": "success",
+      "delete_seconds": 0.04,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 11,
+      "create_seconds": 0.168,
+      "create_state": "success",
+      "delete_seconds": 0.165,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 12,
+      "create_seconds": 0.173,
+      "create_state": "success",
+      "delete_seconds": 0.163,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 13,
+      "create_seconds": 0.17,
+      "create_state": "success",
+      "delete_seconds": 0.043,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 14,
+      "create_seconds": 0.17,
+      "create_state": "success",
+      "delete_seconds": 0.044,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 15,
+      "create_seconds": 0.173,
+      "create_state": "success",
+      "delete_seconds": 0.172,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 16,
+      "create_seconds": 0.171,
+      "create_state": "success",
+      "delete_seconds": 0.165,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 17,
+      "create_seconds": 0.17,
+      "create_state": "success",
+      "delete_seconds": 0.042,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 18,
+      "create_seconds": 0.172,
+      "create_state": "success",
+      "delete_seconds": 0.171,
+      "delete_state": "success"
+    },
+    {
+      "iteration": 19,
+      "create_seconds": 0.165,
+      "create_state": "success",
+      "delete_seconds": 0.041,
+      "delete_state": "success"
+    }
+  ]
+}

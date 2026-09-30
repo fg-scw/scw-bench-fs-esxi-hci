@@ -1,0 +1,70 @@
+{
+  "created_utc": "2026-09-30T08:33:23.657777+00:00",
+  "backend": "SBS 15k 10GB ext4",
+  "hosts": {
+    "gateway": {
+      "ip": "51.159.160.241",
+      "mount": "/mnt/nfs-block-client",
+      "findmnt": "127.0.0.1:/mnt/block-validation nfs4   rw,relatime,vers=4.1,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=127.0.0.1,local_lock=none,addr=127.0.0.1"
+    },
+    "peer": {
+      "ip": "51.159.150.158",
+      "mount": "/mnt/nfs-block",
+      "findmnt": "172.16.12.64:/mnt/block-validation nfs4   rw,relatime,vers=4.1,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=172.16.12.66,local_lock=none,addr=172.16.12.64"
+    }
+  },
+  "probes": [
+    {
+      "mechanism": "flock",
+      "holder": "gateway",
+      "contender": "peer",
+      "holder_exit": 0,
+      "while_held_exit": 1,
+      "while_held_stdout": "BUSY",
+      "while_held_stderr": "",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "after_release_stderr": "",
+      "pass": true
+    },
+    {
+      "mechanism": "flock",
+      "holder": "peer",
+      "contender": "gateway",
+      "holder_exit": 0,
+      "while_held_exit": 1,
+      "while_held_stdout": "BUSY",
+      "while_held_stderr": "",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "after_release_stderr": "",
+      "pass": true
+    },
+    {
+      "mechanism": "fcntl",
+      "holder": "gateway",
+      "contender": "peer",
+      "holder_exit": 0,
+      "while_held_exit": 1,
+      "while_held_stdout": "BUSY",
+      "while_held_stderr": "",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "after_release_stderr": "",
+      "pass": true
+    },
+    {
+      "mechanism": "fcntl",
+      "holder": "peer",
+      "contender": "gateway",
+      "holder_exit": 0,
+      "while_held_exit": 1,
+      "while_held_stdout": "BUSY",
+      "while_held_stderr": "",
+      "after_release_exit": 0,
+      "after_release_stdout": "ACQUIRED",
+      "after_release_stderr": "",
+      "pass": true
+    }
+  ]
+}

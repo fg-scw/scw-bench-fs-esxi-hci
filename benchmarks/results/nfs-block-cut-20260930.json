@@ -1,0 +1,10 @@
+{
+  "service": "nfs-server",
+  "requested_stop_seconds": 6,
+  "started_utc": "2026-09-30T08:39:37.606164+00:00",
+  "stopped_utc": "2026-09-30T08:39:37.690721+00:00",
+  "restarted_utc": "2026-09-30T08:39:43.847066+00:00",
+  "stop_start_elapsed_seconds": 6.241,
+  "watch_started_utc": "2026-09-30T08:39:28.752882+00:00",
+  "watch_result_remote": "/root/validation-nfs-block-20260930/recovery-20260930T083958834928Z.json"
+}

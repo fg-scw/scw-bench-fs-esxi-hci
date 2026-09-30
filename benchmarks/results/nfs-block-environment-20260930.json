@@ -1,0 +1,48 @@
+{
+  "created_utc": "2026-09-30T08:35:05.286116+00:00",
+  "runner_git_commit": "b01569ef3a42f1a44aebfcdd625947dd25ee2098",
+  "runner_sha256": "ad175fb216f2fabb32dd3a9fe0e4344a56f033349ce2ec0dea71de0d682da580",
+  "hosts": {
+    "gateway": {
+      "public_ip": "51.159.160.241",
+      "command": "uname -r; fio --version; findmnt -T /mnt/block-validation -n -o SOURCE,FSTYPE,OPTIONS; findmnt -T /mnt/nfs-block-client -n -o SOURCE,FSTYPE,OPTIONS; lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS,SERIAL; cat /etc/exports.d/block-validation-20260930.exports; nfsstat -s",
+      "output": "6.8.0-139-generic\nfio-3.36\n/dev/sdb ext4   rw,noatime,stripe=1024\n127.0.0.1:/mnt/block-validation nfs4   rw,relatime,vers=4.1,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=127.0.0.1,local_lock=none,addr=127.0.0.1\nNAME     SIZE FSTYPE MOUNTPOINTS           SERIAL\nloop0      8G ext4   /mnt/loop-validation  \nsda      9.3G                              volume-7f9e7f25-c70d-4268-b264-575a1cd07049\n\u251c\u2500sda1   8.3G ext4   /                     \n\u251c\u2500sda14    4M                              \n\u251c\u2500sda15  106M vfat   /boot/efi             \n\u2514\u2500sda16  913M ext4   /boot                 \nsdb      9.3G ext4   /mnt/block-validation volume-47355227-c950-4848-a758-46b0671b3445\n/mnt/block-validation 172.16.12.66(rw,sync,no_subtree_check,no_root_squash,fsid=3) 127.0.0.1(rw,sync,no_subtree_check,no_root_squash,fsid=3) 172.16.12.5(rw,sync,no_subtree_check,no_root_squash,fsid=3)\nServer rpc stats:\ncalls      badcalls   badfmt     badauth    badclnt\n703080     2          0          2          0       \n\nServer nfs v4:\nnull             compound         \n5         0%     703075   99%     \n\nServer nfs v4 operations:\nop0-unused       op1-unused       op2-future       access           close            \n0         0%     0         0%     0         0%     539       0%     404       0%     \ncommit           create           delegpurge       delegreturn      getattr          \n6         0%     12        0%     0         0%     6         0%     4128      0%     \ngetfh            link             lock             lockt            locku            \n1493      0%     0         0%     36        0%     0         0%     28        0%     \nlookup           lookup_root      nverify          open             openattr         \n2477      0%     0         0%     55        0%     429       0%     0         0%     \nopen_conf        open_dgrd        putfh            putpubfh         putrootfh        \n0         0%     0         0%     701193   33%     0         0%     25        0%     \nread             readdir          readlink         remove           rename           \n632568   29%     6         0%     0         0%     105       0%     0         0%     \nrenew            restorefh        savefh           secinfo          setattr          \n0         0%     59        0%     59        0%     0         0%     116       0%     \nsetcltid         setcltidconf     verify           write            rellockowner     \n0         0%     0         0%     0         0%     63112     2%     0         0%     \nbc_ctl           bind_conn        exchange_id      create_ses       destroy_ses      \n0         0%     4         0%     18        0%     20        0%     8         0%     \nfree_stateid     getdirdeleg      getdevinfo       getdevlist       layoutcommit     \n28        0%     0         0%     0         0%     0         0%     0         0%     \nlayoutget        layoutreturn     secinfononam     sequence         set_ssv          \n0         0%     0         0%     8         0%     703023   33%     0         0%     \ntest_stateid     want_deleg       destroy_clid     reclaim_comp     allocate         \n0         0%     0         0%     2         0%     17        0%     0         0%     \ncopy             copy_notify      deallocate       ioadvise         layouterror      \n0         0%     0         0%     0         0%     0         0%     0         0%     \nlayoutstats      offloadcancel    offloadstatus    readplus         seek             \n0         0%     0         0%     0         0%     0         0%     0         0%     \nwrite_same       \n0         0%     \n\n"
+    },
+    "peer": {
+      "public_ip": "51.159.150.158",
+      "command": "uname -r; fio --version; findmnt -T /mnt/nfs-block -n -o SOURCE,FSTYPE,OPTIONS; sha256sum /root/validation-run-20260930.py; ip -4 -brief address",
+      "output": "6.8.0-139-generic\nfio-3.36\n172.16.12.64:/mnt/block-validation nfs4   rw,relatime,vers=4.1,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=172.16.12.66,local_lock=none,addr=172.16.12.64\nad175fb216f2fabb32dd3a9fe0e4344a56f033349ce2ec0dea71de0d682da580  /root/validation-run-20260930.py\nlo               UNKNOWN        127.0.0.1/8 \nens2             UP             51.159.150.158/32 metric 100 \nens7             UP             172.16.12.66/22 metric 50 \n"
+    }
+  },
+  "block_volume": {
+    "id": "47355227-c950-4848-a758-46b0671b3445",
+    "name": "fs-validation-nfs-block-20260930",
+    "type": "sbs_15k",
+    "size": 10000000000,
+    "project_id": "c96fe71c-bc1b-40a1-9559-eb37baeb627e",
+    "created_at": "2026-09-30T08:27:14.037875Z",
+    "updated_at": "2026-09-30T08:27:21.735837Z",
+    "references": [
+      {
+        "id": "09ee2eed-0d8f-4c05-b687-7dbae20880ce",
+        "product_resource_type": "instance_server",
+        "product_resource_id": "ce4411ed-9379-4ff6-a92e-832f127b9a6f",
+        "created_at": "2026-09-30T08:27:21.735837Z",
+        "type": "exclusive",
+        "status": "attached"
+      }
+    ],
+    "parent_snapshot_id": null,
+    "status": "in_use",
+    "tags": [
+      "fs-validation",
+      "temporary"
+    ],
+    "zone": "fr-par-2",
+    "specs": {
+      "perf_iops": 15000,
+      "class": "sbs"
+    },
+    "last_detached_at": null
+  }
+}

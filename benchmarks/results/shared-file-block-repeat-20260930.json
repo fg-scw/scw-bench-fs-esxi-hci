@@ -1,0 +1,28 @@
+{
+  "created_utc": "2026-09-30T08:45:28.482539+00:00",
+  "workload": "two hosts concurrently update one 4KiB file, flock + fsync, 100 increments each",
+  "workers": {
+    "gateway": {
+      "exit_code": 0,
+      "path": "/mnt/nfs-block-client/shared-counter-20260930-repeat.bin",
+      "stdout": "{\"increments\": 100, \"seconds\": 0.746, \"started_utc\": \"2026-09-30T08:45:28.552165+00:00\", \"finished_utc\": \"2026-09-30T08:45:29.298513+00:00\", \"max_lock_wait_seconds\": 0.000168, \"max_io_seconds\": 0.005831, \"lock_waits_over_one_second\": []}",
+      "stderr": ""
+    },
+    "peer": {
+      "exit_code": 0,
+      "path": "/mnt/nfs-block/shared-counter-20260930-repeat.bin",
+      "stdout": "{\"increments\": 100, \"seconds\": 30.995, \"started_utc\": \"2026-09-30T08:45:28.551032+00:00\", \"finished_utc\": \"2026-09-30T08:45:59.545600+00:00\", \"max_lock_wait_seconds\": 30.112288, \"max_io_seconds\": 0.00465, \"lock_waits_over_one_second\": [{\"iteration\": 0, \"seconds\": 30.112288}]}",
+      "stderr": ""
+    }
+  },
+  "start_barrier": "Both remote workers READY before GO on their stdin",
+  "delay_between_increments_seconds": 0.005,
+  "worker_code_template": "import fcntl,json,os,sys,time\nfrom datetime import datetime,timezone\nprint('READY',flush=True)\nassert sys.stdin.readline().strip()=='GO'\nstarted_utc=datetime.now(timezone.utc).isoformat()\nstart=time.monotonic()\nlock_waits=[]\nio_durations=[]\nwith open('/mnt/nfs-block/shared-counter-20260930-repeat.bin','r+b',buffering=0) as f:\n for i in range(100):\n  lock_start=time.monotonic()\n  fcntl.flock(f,fcntl.LOCK_EX)\n  lock_waits.append(time.monotonic()-lock_start)\n  io_start=time.monotonic()\n  f.seek(0);data=f.read(4096)\n  assert len(data)==4096 and data[10:]==b'X'*4086\n  value=int(data[:10])+1\n  f.seek(0);assert f.write(f\"{value:010d}\".encode()+b'X'*4086)==4096\n  os.fsync(f.fileno())\n  io_durations.append(time.monotonic()-io_start)\n  fcntl.flock(f,fcntl.LOCK_UN)\n  time.sleep(0.005)\nprint(json.dumps({'increments':100,'seconds':round(time.monotonic()-start,3),'started_utc':started_utc,'finished_utc':datetime.now(timezone.utc).isoformat(),'max_lock_wait_seconds':round(max(lock_waits),6),'max_io_seconds':round(max(io_durations),6),'lock_waits_over_one_second':[{'iteration':i,'seconds':round(t,6)} for i,t in enumerate(lock_waits) if t>1]}))\n",
+  "final": {
+    "counter": 200,
+    "size": 4096,
+    "payload_valid": true
+  },
+  "worker_intervals_overlap": true,
+  "pass": true
+}
